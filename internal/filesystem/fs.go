@@ -36,13 +36,19 @@ type OSFileSystem struct{}
 // An empty value means the platform did not expose a supported identity.
 func platformID(info os.FileInfo) string {
 	sys := info.Sys()
-	if sys == nil { return "" }
+	if sys == nil {
+		return ""
+	}
 	v := reflect.Indirect(reflect.ValueOf(sys))
-	if v.Kind() != reflect.Struct { return "" }
+	if v.Kind() != reflect.Struct {
+		return ""
+	}
 	values := make([]string, 0, 3)
 	for _, name := range []string{"Dev", "Ino", "VolumeSerialNumber", "FileIndexHigh", "FileIndexLow"} {
 		field := v.FieldByName(name)
-		if field.IsValid() && field.CanInterface() { values = append(values, fmt.Sprint(field.Interface())) }
+		if field.IsValid() && field.CanInterface() {
+			values = append(values, fmt.Sprint(field.Interface()))
+		}
 	}
 	return strings.Join(values, ":")
 }
@@ -65,8 +71,12 @@ func (OSFileSystem) Stat(path string) (FileInfo, error) {
 }
 
 func (OSFileSystem) Open(path string) (io.ReadCloser, error) { return os.Open(path) }
-func (OSFileSystem) CreateTemp(dir, pattern string) (*os.File, error) { return os.CreateTemp(dir, pattern) }
-func (OSFileSystem) Replace(tempPath, targetPath string) error { return os.Rename(tempPath, targetPath) }
+func (OSFileSystem) CreateTemp(dir, pattern string) (*os.File, error) {
+	return os.CreateTemp(dir, pattern)
+}
+func (OSFileSystem) Replace(tempPath, targetPath string) error {
+	return os.Rename(tempPath, targetPath)
+}
 func (OSFileSystem) Remove(path string) error { return os.Remove(path) }
 
 func NormalizeRelativePath(path string) (string, error) {
@@ -90,4 +100,5 @@ func isWindowsAbsolute(path string) bool {
 }
 
 type errorsInvalidPath struct{}
+
 func (errorsInvalidPath) Error() string { return "invalid relative path" }

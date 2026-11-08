@@ -7,14 +7,16 @@ import (
 
 type FileRecord struct {
 	FileID, NormalizedPath, FileType, PlatformID string
-	Size, MTimeNS int64
+	Size, MTimeNS                                int64
 }
 
 // ReplaceFileIndex persists one completed scan atomically. Paths absent from
 // the scan remain in the index as tombstones for later sync/version handling.
 func (s *ClientStore) ReplaceFileIndex(ctx context.Context, records []FileRecord) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil { return fmt.Errorf("begin file index transaction: %w", err) }
+	if err != nil {
+		return fmt.Errorf("begin file index transaction: %w", err)
+	}
 	defer func() { _ = tx.Rollback() }()
 	// A completed scan is the current filesystem snapshot. Preserve rows for
 	// historical/version bookkeeping, but mark paths absent from this scan as
@@ -47,18 +49,24 @@ ON CONFLICT(normalized_path) DO UPDATE SET
 			return fmt.Errorf("upsert file %q: %w", record.NormalizedPath, err)
 		}
 	}
-	if err := tx.Commit(); err != nil { return fmt.Errorf("commit file index: %w", err) }
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit file index: %w", err)
+	}
 	return nil
 }
 
 func (s *ClientStore) CountFiles(ctx context.Context) (int, error) {
 	var count int
-	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(1) FROM files`).Scan(&count); err != nil { return 0, err }
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(1) FROM files`).Scan(&count); err != nil {
+		return 0, err
+	}
 	return count, nil
 }
 
 func (s *ClientStore) CountActiveFiles(ctx context.Context) (int, error) {
 	var count int
-	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(1) FROM files WHERE tombstone = 0`).Scan(&count); err != nil { return 0, err }
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(1) FROM files WHERE tombstone = 0`).Scan(&count); err != nil {
+		return 0, err
+	}
 	return count, nil
 }
