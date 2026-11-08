@@ -3,6 +3,8 @@ package filesystem
 import (
 	"fmt"
 	"time"
+
+	"github.com/IAMI315/Cloud-LocalStore/internal/domain"
 )
 
 type StableReader struct {
@@ -33,5 +35,5 @@ func (r StableReader) Check(path string) (FileInfo, error) {
 		previous = before
 		time.Sleep(r.PollDelay)
 	}
-	return FileInfo{}, fmt.Errorf("%w: %s", ErrUnstableFile, path)
+	return FileInfo{}, fmt.Errorf("%w: %s", domain.ErrUnstableFile, path)
 }
