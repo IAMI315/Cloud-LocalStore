@@ -6,7 +6,7 @@ import (
 	"io"
 
 	"github.com/IAMI315/Cloud-LocalStore/internal/domain"
-	"lukechampine.com/blake3"
+	"github.com/zeebo/blake3"
 )
 
 type Chunk struct {

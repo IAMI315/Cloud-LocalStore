@@ -6,4 +6,4 @@ require modernc.org/sqlite v1.36.1
 
 require github.com/fsnotify/fsnotify v1.8.0
 
-require lukechampine.com/blake3 v1.3.0
+require github.com/zeebo/blake3 v0.2.4
