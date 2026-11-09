@@ -2,6 +2,7 @@ package objectstore
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -27,6 +28,7 @@ func (s *LocalFS) path(hash domain.ChunkHash) string {
 }
 
 func (s *LocalFS) Has(_ context.Context, hash domain.ChunkHash) (bool, error) {
+	if err := s.ValidateHash(hash); err != nil { return false, err }
 	_, err := os.Stat(s.path(hash))
 	if err == nil { return true, nil }
 	if os.IsNotExist(err) { return false, nil }
@@ -35,6 +37,7 @@ func (s *LocalFS) Has(_ context.Context, hash domain.ChunkHash) (bool, error) {
 
 func (s *LocalFS) Put(ctx context.Context, chunk Chunk) error {
 	if err := ctx.Err(); err != nil { return err }
+	if err := s.ValidateHash(chunk.Hash); err != nil { return err }
 	if !Verify(chunk.Data, chunk.Hash) { return fmt.Errorf("chunk hash mismatch: %s", chunk.Hash) }
 	target := s.path(chunk.Hash)
 	if ok, err := s.Has(ctx, chunk.Hash); err != nil { return err } else if ok { return nil }
@@ -50,7 +53,10 @@ func (s *LocalFS) Put(ctx context.Context, chunk Chunk) error {
 	return nil
 }
 
-func (s *LocalFS) Open(_ context.Context, hash domain.ChunkHash) (io.ReadCloser, error) { return os.Open(s.path(hash)) }
+func (s *LocalFS) Open(_ context.Context, hash domain.ChunkHash) (io.ReadCloser, error) {
+	if err := s.ValidateHash(hash); err != nil { return nil, err }
+	return os.Open(s.path(hash))
+}
 
 func (s *LocalFS) Read(ctx context.Context, hash domain.ChunkHash) ([]byte, error) {
 	if err := ctx.Err(); err != nil { return nil, err }
@@ -67,10 +73,15 @@ func (s *LocalFS) Verify(ctx context.Context, hash domain.ChunkHash) error {
 	return nil
 }
 
-func (s *LocalFS) Delete(_ context.Context, hash domain.ChunkHash) error { return os.Remove(s.path(hash)) }
+func (s *LocalFS) Delete(_ context.Context, hash domain.ChunkHash) error {
+	if err := s.ValidateHash(hash); err != nil { return err }
+	return os.Remove(s.path(hash))
+}
 
 func (s *LocalFS) ValidateHash(hash domain.ChunkHash) error {
-	if strings.TrimSpace(string(hash)) == "" { return fmt.Errorf("empty chunk hash") }
+	h := strings.TrimSpace(string(hash))
+	if len(h) != 64 { return fmt.Errorf("invalid chunk hash length") }
+	if _, err := hex.DecodeString(h); err != nil { return fmt.Errorf("invalid chunk hash: %w", err) }
 	return nil
 }
 

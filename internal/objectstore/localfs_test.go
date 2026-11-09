@@ -22,6 +22,12 @@ func TestLocalFSRejectsCorruptChunk(t *testing.T) {
 	if err := s.Put(context.Background(), Chunk{Hash: "bad", Size: 1, Data: []byte("x")}); err == nil { t.Fatal("expected hash mismatch") }
 }
 
+func TestLocalFSRejectsUnsafeHash(t *testing.T) {
+	s, err := NewLocalFS(t.TempDir())
+	if err != nil { t.Fatal(err) }
+	if _, err := s.Read(context.Background(), "../escape"); err == nil { t.Fatal("expected invalid hash error") }
+}
+
 func TestBuildFileStoresFixedChunks(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "input.bin")
