@@ -26,14 +26,24 @@ func Verify(data []byte, expected domain.ChunkHash) bool {
 }
 
 func Split(r io.Reader, chunkSize int64, fn func(Chunk) error) error {
-	if chunkSize <= 0 { chunkSize = domain.DefaultChunkSize }
+	if chunkSize <= 0 {
+		chunkSize = domain.DefaultChunkSize
+	}
 	buf := make([]byte, chunkSize)
 	for {
 		n, err := io.ReadFull(r, buf)
-		if err == io.EOF { return nil }
-		if err != nil && err != io.ErrUnexpectedEOF { return err }
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil && err != io.ErrUnexpectedEOF {
+			return err
+		}
 		data := append([]byte(nil), buf[:n]...)
-		if err := fn(Chunk{Hash: Hash(data), Size: int64(n), Data: data}); err != nil { return err }
-		if err == io.ErrUnexpectedEOF { return nil }
+		if err := fn(Chunk{Hash: Hash(data), Size: int64(n), Data: data}); err != nil {
+			return err
+		}
+		if err == io.ErrUnexpectedEOF {
+			return nil
+		}
 	}
 }
