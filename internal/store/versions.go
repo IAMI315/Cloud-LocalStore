@@ -113,6 +113,27 @@ func (s *ClientStore) RestoreFileVersion(ctx context.Context, fileID domain.File
 	return s.CreateFileVersion(ctx, fileID, source, manifest, false)
 }
 
+// RestoreFileVersionTo applies a historical version to target and then records
+// the restoration as a new current version. The target is only replaced after
+// every referenced chunk has been read and verified.
+func (s *ClientStore) RestoreFileVersionTo(ctx context.Context, fileID domain.FileID, source domain.FileVersionID, target string, objects *objectstore.LocalFS) (domain.FileVersionID, error) {
+	if objects == nil {
+		return "", fmt.Errorf("object store is required")
+	}
+	var manifestID domain.ManifestID
+	if err := s.DB.QueryRowContext(ctx, `SELECT manifest_id FROM file_versions WHERE file_id=? AND version_id=?`, fileID, source).Scan(&manifestID); err != nil {
+		return "", err
+	}
+	manifest, err := objects.ReadManifest(ctx, manifestID)
+	if err != nil {
+		return "", fmt.Errorf("read manifest %s: %w", manifestID, err)
+	}
+	if err := objects.RestoreFile(ctx, manifest, target); err != nil {
+		return "", fmt.Errorf("restore file: %w", err)
+	}
+	return s.CreateFileVersion(ctx, fileID, source, manifestID, false)
+}
+
 func nullableID(id domain.FileVersionID) any {
 	if id == "" {
 		return nil

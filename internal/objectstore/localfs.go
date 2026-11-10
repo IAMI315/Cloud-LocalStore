@@ -206,6 +206,102 @@ func (s *LocalFS) ReadManifest(ctx context.Context, id domain.ManifestID) (Manif
 	return m, nil
 }
 
+// RestoreFile reconstructs a file from verified chunks and atomically replaces
+// target only after the complete temporary file has been synced successfully.
+func (s *LocalFS) RestoreFile(ctx context.Context, m Manifest, target string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := m.Validate(); err != nil {
+		return err
+	}
+	if target == "" {
+		return fmt.Errorf("restore target is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".restore-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	keep := false
+	defer func() {
+		_ = tmp.Close()
+		if !keep {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	var written int64
+	for _, hash := range m.Chunks {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		data, err := s.Read(ctx, hash)
+		if err != nil {
+			return fmt.Errorf("read chunk %s: %w", hash, err)
+		}
+		if !Verify(data, hash) {
+			return fmt.Errorf("chunk hash mismatch: %s", hash)
+		}
+		if _, err := tmp.Write(data); err != nil {
+			return err
+		}
+		written += int64(len(data))
+	}
+	if written != m.Size {
+		return fmt.Errorf("restored size %d does not match manifest size %d", written, m.Size)
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	backup, err := backupTarget(target)
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, target); err != nil {
+		if backup != "" {
+			_ = os.Rename(backup, target)
+		}
+		return err
+	}
+	keep = true
+	if backup != "" {
+		_ = os.Remove(backup)
+	}
+	return nil
+}
+
+func backupTarget(target string) (string, error) {
+	if _, err := os.Stat(target); err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	backup, err := os.CreateTemp(filepath.Dir(target), ".restore-backup-*")
+	if err != nil {
+		return "", err
+	}
+	backupName := backup.Name()
+	if err := backup.Close(); err != nil {
+		_ = os.Remove(backupName)
+		return "", err
+	}
+	if err := os.Remove(backupName); err != nil {
+		return "", err
+	}
+	if err := os.Rename(target, backupName); err != nil {
+		return "", err
+	}
+	return backupName, nil
+}
+
 func (s *LocalFS) ValidateHash(hash domain.ChunkHash) error {
 	h := strings.TrimSpace(string(hash))
 	if len(h) != 64 {

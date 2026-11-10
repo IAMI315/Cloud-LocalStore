@@ -100,6 +100,81 @@ func TestBuildFileStoresFixedChunks(t *testing.T) {
 	}
 }
 
+func TestRestoreFileAtomicallyRebuildsTarget(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewLocalFS(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := BuildFile(context.Background(), filepath.Join(root, "input.bin"), store, 4)
+	if err == nil {
+		t.Fatal("expected missing input error")
+	}
+	data := []byte("abcdefghij")
+	input := filepath.Join(root, "input.bin")
+	if err := os.WriteFile(input, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err = BuildFile(context.Background(), input, store, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutManifest(context.Background(), manifest); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "restored", "file.bin")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("old-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RestoreFile(context.Background(), manifest, target); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("restored %q", got)
+	}
+}
+
+func TestRestoreFileLeavesTargetWhenChunkMissing(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewLocalFS(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("abcdefgh")
+	input := filepath.Join(root, "input.bin")
+	if err := os.WriteFile(input, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := BuildFile(context.Background(), input, store, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(store.path(manifest.Chunks[1])); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "target.bin")
+	if err := os.WriteFile(target, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RestoreFile(context.Background(), manifest, target); err == nil {
+		t.Fatal("expected missing chunk error")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "keep" {
+		t.Fatalf("target changed after failed restore: %q", got)
+	}
+}
+
 func TestLocalFSStoresAndReadsManifest(t *testing.T) {
 	s, err := NewLocalFS(t.TempDir())
 	if err != nil {
