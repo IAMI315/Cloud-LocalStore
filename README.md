@@ -10,7 +10,23 @@ $env:GOCACHE = "D:\Develop\Temp\Cloud-LocalStore-commit-checkout\go-cache"
 $env:GOMODCACHE = "D:\Develop\Temp\Cloud-LocalStore-commit-checkout\go-mod-cache"
 $env:GOTMPDIR = "D:\Develop\Temp\Cloud-LocalStore-commit-checkout\go-tmp"
 go build -o build-temp\clouddrive-agent.exe .\cmd\clouddrive-agent
+# Windows 双击入口：隐藏控制台窗口，页面资源随 exe 嵌入
+go build -ldflags "-H=windowsgui" -o build-temp\clouddrive-desktop.exe .\cmd\clouddrive-desktop
 ```
+
+构建后直接双击 `build-temp\clouddrive-desktop.exe` 即可启动本地 GUI。程序会绑定
+`127.0.0.1:8765`，启动嵌入式 HTTP 控制台并用系统默认浏览器打开页面，不需要先输入
+`gui` 命令；关闭桌面进程时会停止 HTTP 服务、目录监控并关闭本地数据库。页面、CSS 和
+JavaScript 通过 Go `embed.FS` 编入 exe，不依赖 Node.js 或外部静态文件。隐藏控制台后，
+启动失败和运行错误写入 exe 同目录的 `clouddrive-desktop.log`（例如
+`build-temp\clouddrive-desktop.log`）。需要在终端诊断时可以不使用 `-H=windowsgui`，或
+运行 `clouddrive-desktop.exe --no-browser`。桌面入口也支持可选的
+`--addr 127.0.0.1:8765`，GUI 服务仍会拒绝非 loopback 地址。
+
+第一版使用嵌入式 Web GUI 加系统浏览器承载，没有引入原生 WebView/Win32 框架，因此保持
+CGO-free、可用当前 Go 1.24 工具链直接交叉编译；代价是需要安装并使用浏览器窗口，尚未
+提供独立原生窗口。GUI 当前只控制本地库，状态中的网络会显示“未连接（本地原型）”，
+VPS 网络同步尚未接入。
 
 ## 演示流程
 
