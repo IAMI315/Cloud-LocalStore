@@ -34,3 +34,10 @@ func TestManifestRejectsUnsupportedFormat(t *testing.T) {
 		t.Fatal("expected unsupported format error")
 	}
 }
+
+func TestManifestRejectsInvalidChunkHash(t *testing.T) {
+	m := Manifest{Size: 1, ChunkSize: 4, Chunks: []domain.ChunkHash{"bad"}, HashAlgorithm: "BLAKE3-256", FormatVersion: ManifestFormatVersion}
+	if err := m.Validate(); err == nil {
+		t.Fatal("expected invalid chunk hash")
+	}
+}

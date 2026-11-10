@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/IAMI315/Cloud-LocalStore/internal/domain"
 )
 
 func TestLocalFSPutReadVerifyAndDeduplicate(t *testing.T) {
@@ -53,6 +55,27 @@ func TestLocalFSRejectsUnsafeHash(t *testing.T) {
 	}
 }
 
+func TestLocalFSCleansInterruptedUploads(t *testing.T) {
+	root := t.TempDir()
+	s, err := NewLocalFS(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(root, "ab", ".upload-interrupted")
+	if err := os.MkdirAll(filepath.Dir(tmp), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tmp, []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CleanupTemp(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Fatalf("temporary upload still exists: %v", err)
+	}
+}
+
 func TestBuildFileStoresFixedChunks(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "input.bin")
@@ -74,5 +97,24 @@ func TestBuildFileStoresFixedChunks(t *testing.T) {
 		if err := store.Verify(context.Background(), hash); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestLocalFSStoresAndReadsManifest(t *testing.T) {
+	s, err := NewLocalFS(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Manifest{Size: 5, ChunkSize: 4, Chunks: []domain.ChunkHash{Hash([]byte("hell")), Hash([]byte("o"))}, HashAlgorithm: "BLAKE3-256", FormatVersion: ManifestFormatVersion}
+	id, err := s.PutManifest(context.Background(), m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ReadManifest(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Size != m.Size || len(got.Chunks) != len(m.Chunks) {
+		t.Fatalf("manifest mismatch: %#v", got)
 	}
 }

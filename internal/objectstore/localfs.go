@@ -33,6 +33,11 @@ func (s *LocalFS) path(hash domain.ChunkHash) string {
 	return filepath.Join(s.Root, prefix, h)
 }
 
+func (s *LocalFS) manifestPath(id domain.ManifestID) string {
+	h := string(id)
+	return filepath.Join(s.Root, "manifests", h[:2], h)
+}
+
 func (s *LocalFS) Has(_ context.Context, hash domain.ChunkHash) (bool, error) {
 	if err := s.ValidateHash(hash); err != nil {
 		return false, err
@@ -122,6 +127,83 @@ func (s *LocalFS) Delete(_ context.Context, hash domain.ChunkHash) error {
 		return err
 	}
 	return os.Remove(s.path(hash))
+}
+
+// CleanupTemp removes interrupted uploads left below the object root.
+func (s *LocalFS) CleanupTemp(ctx context.Context) error {
+	return filepath.WalkDir(s.Root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), ".upload-") {
+			return nil
+		}
+		return os.Remove(path)
+	})
+}
+
+// PutManifest stores the canonical manifest bytes under its content hash.
+func (s *LocalFS) PutManifest(ctx context.Context, m Manifest) (domain.ManifestID, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	b, err := MarshalManifest(m)
+	if err != nil {
+		return "", err
+	}
+	id := domain.ManifestID(Hash(b))
+	target := s.manifestPath(id)
+	if _, err := os.Stat(target); err == nil {
+		return id, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".upload-manifest-")
+	if err != nil {
+		return "", err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err = tmp.Write(b); err == nil {
+		err = tmp.Sync()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmpName, target); err != nil && !os.IsExist(err) {
+		return "", err
+	}
+	return id, nil
+}
+
+func (s *LocalFS) ReadManifest(ctx context.Context, id domain.ManifestID) (Manifest, error) {
+	if err := ctx.Err(); err != nil {
+		return Manifest{}, err
+	}
+	if err := s.ValidateHash(domain.ChunkHash(id)); err != nil {
+		return Manifest{}, err
+	}
+	b, err := os.ReadFile(s.manifestPath(id))
+	if err != nil {
+		return Manifest{}, err
+	}
+	m, err := UnmarshalManifest(b)
+	if err != nil {
+		return Manifest{}, err
+	}
+	if domain.ManifestID(Hash(b)) != id {
+		return Manifest{}, fmt.Errorf("manifest hash mismatch: %s", id)
+	}
+	return m, nil
 }
 
 func (s *LocalFS) ValidateHash(hash domain.ChunkHash) error {

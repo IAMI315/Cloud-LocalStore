@@ -65,11 +65,31 @@ func (s *ClientStore) CreateFileVersion(ctx context.Context, fileID domain.FileI
 		return "", fmt.Errorf("begin create file version: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	var exists int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM files WHERE file_id=?`, fileID).Scan(&exists); err != nil {
+		return "", fmt.Errorf("check file: %w", err)
+	}
+	if exists == 0 {
+		return "", fmt.Errorf("file not found: %s", fileID)
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM manifests WHERE manifest_id=?`, manifest).Scan(&exists); err != nil {
+		return "", fmt.Errorf("check manifest: %w", err)
+	}
+	if exists == 0 {
+		return "", fmt.Errorf("manifest not found: %s", manifest)
+	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO file_versions(version_id,file_id,parent_version_id,manifest_id,is_conflict) VALUES(?,?,?,?,?)`, version, fileID, nullableID(parent), manifest, boolInt(conflict)); err != nil {
 		return "", fmt.Errorf("create file version: %w", err)
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE files SET current_version_id=?, tombstone=0, updated_at=CURRENT_TIMESTAMP WHERE file_id=?`, version, fileID); err != nil {
+	result, err := tx.ExecContext(ctx, `UPDATE files SET current_version_id=?, tombstone=0, updated_at=CURRENT_TIMESTAMP WHERE file_id=?`, version, fileID)
+	if err != nil {
 		return "", err
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		if err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("file update affected %d rows", affected)
 	}
 	if err = tx.Commit(); err != nil {
 		return "", fmt.Errorf("commit file version: %w", err)

@@ -1,6 +1,7 @@
 package objectstore
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -39,6 +40,14 @@ func (m Manifest) Validate() error {
 	}
 	if len(m.Chunks) == 0 && m.Size != 0 {
 		return fmt.Errorf("non-empty manifest has no chunks")
+	}
+	for i, hash := range m.Chunks {
+		if len(hash) != 64 {
+			return fmt.Errorf("invalid chunk hash length at index %d", i)
+		}
+		if _, err := hex.DecodeString(string(hash)); err != nil {
+			return fmt.Errorf("invalid chunk hash at index %d: %w", i, err)
+		}
 	}
 	return nil
 }

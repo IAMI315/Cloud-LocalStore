@@ -40,3 +40,40 @@ func TestSaveManifestAndRestoreVersion(t *testing.T) {
 		t.Fatal("restore should create a new version")
 	}
 }
+
+func TestCreateFileVersionRejectsMissingReferences(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s, err := OpenClient(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateFileVersion(context.Background(), "missing", "", "manifest", false); err == nil {
+		t.Fatal("expected missing file error")
+	}
+}
+
+func TestClientMigrationsAreIdempotent(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := ApplyMigrations(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyMigrations(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM schema_migrations`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("migration count = %d, want 2", count)
+	}
+}
