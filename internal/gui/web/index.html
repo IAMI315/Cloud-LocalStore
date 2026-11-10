@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cloud-LocalStore 本地控制台</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <p class="eyebrow">LOCAL-FIRST FILE VERSIONING</p>
+        <h1>本地控制台</h1>
+      </div>
+      <span id="network" class="pill">网络：未连接（本地原型）</span>
+    </header>
+
+    <section class="panel setup">
+      <h2>本地库</h2>
+      <form id="library-form">
+        <label>同步目录<input id="root" name="root" required placeholder="例如：D:\\CloudDemo"></label>
+        <label>数据目录<input id="data-dir" name="data_dir" placeholder="留空则使用同步目录下的 .clouddrive"></label>
+        <div class="actions"><button type="submit">打开本地库</button><button id="init" type="button" class="secondary">初始化并打开</button></div>
+      </form>
+      <p id="message" class="message" role="status"></p>
+    </section>
+
+    <section class="stats" aria-label="状态">
+      <div><span>活跃文件</span><strong id="active-files">-</strong></div>
+      <div><span>版本总数</span><strong id="versions">-</strong></div>
+      <div><span>已删除路径</span><strong id="tombstones">-</strong></div>
+      <div><span>监控</span><strong id="monitoring">未运行</strong></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading"><h2>文件</h2><div class="actions"><button id="scan">手动扫描</button><button id="monitor" class="secondary">启动监控</button></div></div>
+      <div class="table-wrap"><table><thead><tr><th>路径</th><th>大小</th><th>状态</th><th>当前版本</th><th></th></tr></thead><tbody id="files"><tr><td colspan="5" class="muted">打开本地库后显示文件</td></tr></tbody></table></div>
+    </section>
+
+    <section id="versions-panel" class="panel hidden"><div class="panel-heading"><h2>历史版本：<code id="selected-path"></code></h2><button id="close-versions" class="secondary">关闭</button></div><div class="table-wrap"><table><thead><tr><th>版本 ID</th><th>时间</th><th>Manifest</th><th></th></tr></thead><tbody id="versions-list"></tbody></table></div></section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

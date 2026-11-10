@@ -14,6 +14,16 @@ go build -o build-temp\clouddrive-agent.exe .\cmd\clouddrive-agent
 
 ## 演示流程
 
+启动本地 Web 控制台（页面和 CSS/JS 已嵌入可执行文件，不需要 Node.js）。控制台没有登录层，只允许绑定 `127.0.0.1`、`localhost` 或 `::1` 等回环地址，不能通过局域网访问；不接受 `0.0.0.0` 或外部地址：
+
+```powershell
+& .\build-temp\clouddrive-agent.exe gui
+# 不自动打开浏览器时：
+& .\build-temp\clouddrive-agent.exe gui --addr 127.0.0.1:8765 --no-browser
+```
+
+浏览器打开控制台后，输入同步目录和可选数据目录，点击“初始化并打开”或“打开本地库”。页面支持手动扫描、状态和文件列表、查看版本、恢复历史版本，以及启动/停止本地目录监控。网络状态会显示“未连接（本地原型）”；GUI API 只接受本地目录和同步目录内的相对文件路径。
+
 ```powershell
 $root = "D:\Develop\CloudDemo"
 New-Item -ItemType Directory -Force $root | Out-Null

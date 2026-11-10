@@ -238,6 +238,35 @@ type Status struct {
 	ActiveFiles, Versions, Tombstones int
 }
 
+type FileEntry struct {
+	Path      string `json:"path"`
+	Size      int64  `json:"size"`
+	MTimeNS   int64  `json:"mtime_ns"`
+	Version   string `json:"version"`
+	Tombstone bool   `json:"tombstone"`
+}
+
+// Files returns the indexed regular files, including tombstones retained for
+// version history. Paths come directly from the normalized local index.
+func (a *App) Files(ctx context.Context) ([]FileEntry, error) {
+	rows, err := a.DB.QueryContext(ctx, `SELECT normalized_path,size,mtime_ns,COALESCE(current_version_id,''),tombstone FROM files WHERE file_type='regular' ORDER BY normalized_path`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FileEntry
+	for rows.Next() {
+		var entry FileEntry
+		var tomb int
+		if err := rows.Scan(&entry.Path, &entry.Size, &entry.MTimeNS, &entry.Version, &tomb); err != nil {
+			return nil, err
+		}
+		entry.Tombstone = tomb != 0
+		out = append(out, entry)
+	}
+	return out, rows.Err()
+}
+
 func (a *App) Status(ctx context.Context) (Status, error) {
 	s := Status{Root: a.Root, DataDir: a.DataDir}
 	for q, d := range map[string]*int{`SELECT COUNT(*) FROM files WHERE tombstone=0`: &s.ActiveFiles, `SELECT COUNT(*) FROM file_versions`: &s.Versions, `SELECT COUNT(*) FROM files WHERE tombstone=1`: &s.Tombstones} {

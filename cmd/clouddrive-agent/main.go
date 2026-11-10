@@ -6,12 +6,15 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/IAMI315/Cloud-LocalStore/internal/gui"
 	"github.com/IAMI315/Cloud-LocalStore/internal/localapp"
 )
 
@@ -33,6 +36,9 @@ func run(args []string, out, errOut *os.File) error {
 	args, err = normalizeArgs(args)
 	if err != nil {
 		return err
+	}
+	if command == "gui" {
+		return runGUI(args, out, errOut)
 	}
 	if command == "init" {
 		fs := flag.NewFlagSet("init", flag.ContinueOnError)
@@ -141,6 +147,51 @@ func run(args []string, out, errOut *os.File) error {
 	return nil
 }
 
+func runGUI(args []string, out, errOut *os.File) error {
+	fs := flag.NewFlagSet("gui", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	addr := fs.String("addr", "127.0.0.1:8765", "local HTTP listen address")
+	noBrowser := fs.Bool("no-browser", false, "do not open the local console in a browser")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: clouddrive gui [--addr 127.0.0.1:8765] [--no-browser]")
+	}
+	server := gui.New(*addr)
+	listener, err := server.Listen()
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	defer server.Close()
+	url := server.URL()
+	fmt.Fprintf(out, "Local console listening at %s\nPress Ctrl+C to stop.\n", url)
+	if !*noBrowser {
+		_ = openBrowser(url)
+	}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve(listener) }()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	select {
+	case <-ctx.Done():
+		return server.Shutdown(context.Background())
+	case err := <-serveErr:
+		return err
+	}
+}
+
+func openBrowser(url string) error {
+	if runtime.GOOS == "windows" {
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	}
+	if runtime.GOOS == "darwin" {
+		return exec.Command("open", url).Start()
+	}
+	return exec.Command("xdg-open", url).Start()
+}
+
 // normalizeArgs makes the CLI accept flags before or after positional
 // arguments. The standard flag package stops parsing at the first positional
 // argument, while the documented commands allow both forms.
@@ -192,6 +243,7 @@ Usage:
   clouddrive versions <directory> <relative-file-path> [--data-dir <path>]
   clouddrive restore <directory> <relative-file-path> <version-id> [--data-dir <path>]
   clouddrive run <directory> [--data-dir <path>] [--interval 2m]
+  clouddrive gui [--addr 127.0.0.1:8765] [--no-browser]
 
 By default all local state is stored in <directory>/.clouddrive.
 The current prototype operates locally and does not connect to a VPS.`)
