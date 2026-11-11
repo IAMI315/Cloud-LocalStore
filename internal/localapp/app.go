@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/IAMI315/Cloud-LocalStore/internal/domain"
@@ -19,8 +21,13 @@ import (
 )
 
 type Config struct {
-	RootPath string `json:"root_path"`
-	DataDir  string `json:"data_dir"`
+	RootPath     string `json:"root_path"`
+	DataDir      string `json:"data_dir"`
+	ServerURL    string `json:"server_url,omitempty"`
+	SpaceID      string `json:"space_id,omitempty"`
+	DeviceID     string `json:"device_id,omitempty"`
+	DeviceToken  string `json:"device_token,omitempty"`
+	PairingToken string `json:"pairing_token,omitempty"`
 }
 
 type App struct {
@@ -28,6 +35,7 @@ type App struct {
 	DB            *sql.DB
 	Store         *store.ClientStore
 	Objects       *objectstore.LocalFS
+	syncMu        sync.Mutex
 }
 
 type FileVersion struct {
@@ -103,7 +111,12 @@ func Open(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	idx, err := store.OpenClient(context.Background(), db)
+	// Opening SQLite can wait on a stale writer/WAL lock. Bound startup so a
+	// damaged or concurrently used state directory reports an error instead of
+	// making the desktop window appear frozen indefinitely.
+	openCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	idx, err := store.OpenClient(openCtx, db)
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -123,9 +136,53 @@ func (a *App) Close() error {
 	return nil
 }
 
+// Sync performs one cancellable client synchronization pass. Callers may
+// invoke it from a timer or watcher trigger; the engine serializes overlapping
+// calls and keeps network work out of watcher callbacks.
+func (a *App) Sync(ctx context.Context, remote *objectstore.RemoteClient, ids ...string) error {
+	if remote == nil {
+		return fmt.Errorf("remote client is required")
+	}
+	spaceID, deviceID := remote.SpaceID, remote.DeviceID
+	if len(ids) > 0 {
+		spaceID = ids[0]
+	}
+	if len(ids) > 1 {
+		deviceID = ids[1]
+	}
+	if len(ids) > 2 {
+		return fmt.Errorf("at most space and device IDs may be supplied")
+	}
+	a.syncMu.Lock()
+	defer a.syncMu.Unlock()
+	// Capture local creations/updates before pulling, but do not mark missing
+	// paths as deleted yet. A path may be absent temporarily while a remote
+	// update is waiting to restore it.
+	if _, err := a.scan(ctx, false); err != nil {
+		return err
+	}
+	engine, err := syncengine.NewEngine(a.Root, spaceID, deviceID, a.Objects, a.Store, remote)
+	if err != nil {
+		return err
+	}
+	return engine.SyncWithScan(ctx, func(scanCtx context.Context) error {
+		_, err := a.scan(scanCtx, true)
+		return err
+	})
+}
+
+func (a *App) SaveConnection(c Config) error {
+	c.RootPath, c.DataDir = a.Root, a.DataDir
+	return writeConfig(filepath.Join(a.DataDir, "config.json"), c)
+}
+
 type ScanResult struct{ Files, NewVersions, Tombstones int }
 
 func (a *App) Scan(ctx context.Context) (ScanResult, error) {
+	return a.scan(ctx, true)
+}
+
+func (a *App) scan(ctx context.Context, markMissing bool) (ScanResult, error) {
 	entries, err := (syncengine.Scanner{FS: filesystem.OSFileSystem{}, Root: a.Root}).ScanContext(ctx)
 	if err != nil {
 		return ScanResult{}, err
@@ -148,11 +205,13 @@ func (a *App) Scan(ctx context.Context) (ScanResult, error) {
 	}
 	for rows.Next() {
 		var s fileState
+		var currentVersion sql.NullString
 		var tomb int
-		if err := rows.Scan(&s.ID, &s.Path, &s.Size, &s.MTime, &s.Version, &tomb); err != nil {
+		if err := rows.Scan(&s.ID, &s.Path, &s.Size, &s.MTime, &currentVersion, &tomb); err != nil {
 			rows.Close()
 			return ScanResult{}, err
 		}
+		s.Version = currentVersion.String
 		s.Tombstone = tomb != 0
 		old[s.Path] = s
 	}
@@ -172,7 +231,7 @@ func (a *App) Scan(ctx context.Context) (ScanResult, error) {
 		}
 		records = append(records, store.FileRecord{FileID: id, NormalizedPath: e.RelativePath, FileType: "regular", Size: e.Info.Size, MTimeNS: e.Info.ModTime.UnixNano(), PlatformID: e.Info.PlatformID})
 	}
-	if err := a.Store.ReplaceFileIndex(ctx, records); err != nil {
+	if err := a.Store.ReplaceFileIndexWithOptions(ctx, records, markMissing); err != nil {
 		return ScanResult{}, err
 	}
 	result := ScanResult{Files: len(records)}
@@ -211,12 +270,12 @@ func (a *App) Scan(ctx context.Context) (ScanResult, error) {
 		if _, err := a.Store.SaveManifest(ctx, manifest); err != nil {
 			return result, err
 		}
-		var current sql.NullString
-		if err := a.DB.QueryRowContext(ctx, `SELECT current_version_id FROM files WHERE normalized_path=?`, rec.NormalizedPath).Scan(&current); err != nil {
+		var current, currentFileID sql.NullString
+		if err := a.DB.QueryRowContext(ctx, `SELECT file_id,current_version_id FROM files WHERE normalized_path=?`, rec.NormalizedPath).Scan(&currentFileID, &current); err != nil {
 			return result, err
 		}
 		parent := domain.FileVersionID(current.String)
-		if _, err := a.Store.CreateFileVersion(ctx, domain.FileID(rec.FileID), parent, manifestID, false); err != nil {
+		if _, err := a.Store.CreateFileVersion(ctx, domain.FileID(currentFileID.String), parent, manifestID, false); err != nil {
 			return result, err
 		}
 		result.NewVersions++
@@ -316,19 +375,50 @@ func (a *App) Restore(ctx context.Context, path, version string) (string, error)
 }
 
 func (a *App) Run(ctx context.Context, interval time.Duration) error {
+	return a.runMonitor(ctx, interval, func(runCtx context.Context) error {
+		_, err := a.Scan(runCtx)
+		return err
+	})
+}
+
+// RunSync watches the local library and runs a bidirectional sync whenever a
+// filesystem event arrives. Network errors are intentionally retried on the
+// next event or periodic tick so a temporary outage does not stop monitoring.
+func (a *App) RunSync(ctx context.Context, remote *objectstore.RemoteClient, interval time.Duration) error {
+	if remote == nil {
+		return fmt.Errorf("remote client is required")
+	}
+	return a.runMonitor(ctx, interval, func(runCtx context.Context) error {
+		// A network outage must not leave the monitor blocked forever. Keep the
+		// parent monitor context separate so a timed-out attempt is retried on
+		// the next filesystem event or polling tick.
+		attemptCtx, cancel := context.WithTimeout(runCtx, 30*time.Second)
+		err := a.Sync(attemptCtx, remote)
+		cancel()
+		if runCtx.Err() != nil {
+			return runCtx.Err()
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil
+		}
+		return nil
+	})
+}
+
+func (a *App) runMonitor(ctx context.Context, interval time.Duration, onTrigger func(context.Context) error) error {
 	watcher, err := filesystem.NewWatcherWithExcludes(a.Root, []string{a.DataDir})
 	if err != nil {
 		return err
 	}
 	defer watcher.Close()
-	if _, err := a.Scan(ctx); err != nil {
-		return err
-	}
 	if interval <= 0 {
 		interval = 2 * time.Minute
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	if err := onTrigger(ctx); err != nil {
+		return err
+	}
 	events := watcher.EventsContext(ctx)
 	for {
 		select {
@@ -338,7 +428,7 @@ func (a *App) Run(ctx context.Context, interval time.Duration) error {
 			if !ok {
 				return nil
 			}
-			if _, err := a.Scan(ctx); err != nil && ctx.Err() == nil {
+			if err := onTrigger(ctx); err != nil && ctx.Err() == nil {
 				return err
 			}
 		case err := <-watcher.Errors():
@@ -346,7 +436,7 @@ func (a *App) Run(ctx context.Context, interval time.Duration) error {
 				return err
 			}
 		case <-ticker.C:
-			if _, err := a.Scan(ctx); err != nil {
+			if err := onTrigger(ctx); err != nil {
 				return err
 			}
 		}

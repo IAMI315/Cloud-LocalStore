@@ -111,6 +111,12 @@ func (s *LocalFS) Read(ctx context.Context, hash domain.ChunkHash) ([]byte, erro
 	return io.ReadAll(r)
 }
 
+// ReadObject reads any content-addressed object. It is used by the server for
+// uploaded manifests as well as ordinary chunks.
+func (s *LocalFS) ReadObject(ctx context.Context, hash domain.ChunkHash) ([]byte, error) {
+	return s.Read(ctx, hash)
+}
+
 func (s *LocalFS) Verify(ctx context.Context, hash domain.ChunkHash) error {
 	data, err := s.Read(ctx, hash)
 	if err != nil {
@@ -193,6 +199,11 @@ func (s *LocalFS) ReadManifest(ctx context.Context, id domain.ManifestID) (Manif
 		return Manifest{}, err
 	}
 	b, err := os.ReadFile(s.manifestPath(id))
+	// Remote object uploads store manifests in the regular CAS namespace. Keep
+	// the dedicated local manifest namespace for backward compatibility.
+	if os.IsNotExist(err) {
+		b, err = os.ReadFile(s.path(domain.ChunkHash(id)))
+	}
 	if err != nil {
 		return Manifest{}, err
 	}

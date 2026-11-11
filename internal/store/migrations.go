@@ -21,6 +21,28 @@ CREATE TABLE IF NOT EXISTS chunks (chunk_hash TEXT PRIMARY KEY, size INTEGER NOT
 CREATE TABLE IF NOT EXISTS manifests (manifest_id TEXT PRIMARY KEY, size INTEGER NOT NULL, chunk_size INTEGER NOT NULL, chunk_count INTEGER NOT NULL, chunk_hashes TEXT NOT NULL, hash_algorithm TEXT NOT NULL, format_version INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS file_versions (version_id TEXT PRIMARY KEY, file_id TEXT NOT NULL, parent_version_id TEXT, manifest_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, is_conflict INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(file_id) REFERENCES files(file_id));
 CREATE INDEX IF NOT EXISTS idx_file_versions_file ON file_versions(file_id, created_at);
+`}, {Version: 3, Name: "sync_cursor", UpSQL: `
+CREATE TABLE IF NOT EXISTS sync_state (space_id TEXT PRIMARY KEY, last_seen_revision INTEGER NOT NULL DEFAULT 0, last_applied_revision INTEGER NOT NULL DEFAULT 0, last_ack_revision INTEGER NOT NULL DEFAULT 0, device_epoch INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+`}, {Version: 4, Name: "sync_outbox", UpSQL: `
+CREATE TABLE IF NOT EXISTS sync_outbox (operation_id TEXT PRIMARY KEY, space_id TEXT NOT NULL, normalized_path TEXT NOT NULL, manifest_id TEXT NOT NULL, parent_revision INTEGER NOT NULL, state TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE UNIQUE INDEX IF NOT EXISTS sync_outbox_path_manifest_idx ON sync_outbox(space_id, normalized_path, manifest_id);
+`}, {Version: 5, Name: "sync_outbox_operation_type", UpSQL: `
+ALTER TABLE sync_outbox ADD COLUMN operation_type TEXT NOT NULL DEFAULT 'update';
+DROP INDEX IF EXISTS sync_outbox_path_manifest_idx;
+CREATE UNIQUE INDEX IF NOT EXISTS sync_outbox_path_manifest_type_idx ON sync_outbox(space_id, normalized_path, manifest_id, operation_type);
+`}, {Version: 6, Name: "pending_rename_deletes", UpSQL: `
+CREATE TABLE IF NOT EXISTS pending_rename_deletes (
+ delete_id TEXT PRIMARY KEY,
+ normalized_path TEXT NOT NULL,
+ version_id TEXT NOT NULL DEFAULT '',
+ manifest_id TEXT NOT NULL DEFAULT '',
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_pending_rename_deletes_path ON pending_rename_deletes(normalized_path);
+`}, {Version: 7, Name: "sync_outbox_file_version", UpSQL: `
+ALTER TABLE sync_outbox ADD COLUMN file_version_id TEXT NOT NULL DEFAULT '';
+DROP INDEX IF EXISTS sync_outbox_path_manifest_type_idx;
+CREATE UNIQUE INDEX IF NOT EXISTS sync_outbox_path_manifest_type_version_idx ON sync_outbox(space_id, normalized_path, manifest_id, operation_type, file_version_id);
 `}}
 
 func ApplyMigrations(ctx context.Context, db *sql.DB) error {

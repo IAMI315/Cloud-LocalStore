@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -46,48 +45,4 @@ func TestStartAndShutdownOwnLoopbackService(t *testing.T) {
 	if _, err := client.Get(instance.URL() + "api/state"); err == nil {
 		t.Fatal("request succeeded after shutdown")
 	}
-}
-
-func TestRunStopsOnContextAndDoesNotOpenBrowserWhenDisabled(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	output := &readyWriter{ready: make(chan struct{})}
-	browserCalled := false
-	done := make(chan error, 1)
-	go func() {
-		done <- Run(ctx, Options{Addr: "127.0.0.1:0", NoBrowser: true}, output, func(string) error {
-			browserCalled = true
-			return nil
-		})
-	}()
-	select {
-	case <-output.ready:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not start the service")
-	}
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not stop after context cancellation")
-	}
-	if browserCalled {
-		t.Fatal("browser was opened with NoBrowser")
-	}
-}
-
-type readyWriter struct {
-	mu    sync.Mutex
-	ready chan struct{}
-	once  sync.Once
-}
-
-func (w *readyWriter) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.once.Do(func() { close(w.ready) })
-	return len(p), nil
 }

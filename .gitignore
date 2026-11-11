@@ -1,0 +1,20 @@
+# Local build outputs and toolchain caches
+build-temp/
+go-cache/
+go-mod-cache/
+go-tmp/
+
+# Runtime state, credentials, databases, and object cache
+data/
+CloudLocalStore-State/
+CloudLocalStore-Sync/
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# Local editor and OS files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
