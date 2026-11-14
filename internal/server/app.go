@@ -29,6 +29,9 @@ func NewApp(cfg Config, logger *slog.Logger) (*App, error) {
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = "127.0.0.1:8080"
 	}
+	if cfg.StorageQuotaBytes == 0 {
+		cfg.StorageQuotaBytes = DefaultStorageQuotaBytes
+	}
 	if err := ValidateConfig(cfg); err != nil {
 		return nil, err
 	}
@@ -78,7 +81,7 @@ func NewApp(cfg Config, logger *slog.Logger) (*App, error) {
 }
 
 func (a *App) Store() *store.ServerStore {
-	return &store.ServerStore{DB: a.db, Objects: a.objects}
+	return &store.ServerStore{DB: a.db, Objects: a.objects, DefaultQuotaBytes: a.cfg.StorageQuotaBytes}
 }
 
 func (a *App) Ready(ctx context.Context) error {

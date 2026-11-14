@@ -10,6 +10,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/IAMI315/Cloud-LocalStore/internal/domain"
@@ -21,9 +23,105 @@ import (
 const maxBodySize = 1 << 20
 const maxObjectSize = int64(4 * 1024 * 1024)
 
-type Service struct{ app *App }
+type Service struct {
+	app             *App
+	events          *deviceEventHub
+	statusMu        sync.Mutex
+	lastConnections map[string]string
+}
 
-func NewService(app *App) *Service { return &Service{app: app} }
+func NewService(app *App) *Service {
+	s := &Service{app: app, events: newDeviceEventHub(), lastConnections: make(map[string]string)}
+	go s.deviceStatusLoop()
+	return s
+}
+
+type deviceEvent struct {
+	id    uint64
+	value protocol.DeviceEvent
+}
+
+type deviceEventHub struct {
+	mu          sync.Mutex
+	nextID      atomic.Uint64
+	subscribers map[string]map[chan deviceEvent]struct{}
+}
+
+func newDeviceEventHub() *deviceEventHub {
+	return &deviceEventHub{subscribers: make(map[string]map[chan deviceEvent]struct{})}
+}
+
+func (h *deviceEventHub) subscribe(space string) (chan deviceEvent, func()) {
+	ch := make(chan deviceEvent, 16)
+	h.mu.Lock()
+	if h.subscribers[space] == nil {
+		h.subscribers[space] = make(map[chan deviceEvent]struct{})
+	}
+	h.subscribers[space][ch] = struct{}{}
+	h.mu.Unlock()
+	return ch, func() {
+		h.mu.Lock()
+		if peers := h.subscribers[space]; peers != nil {
+			delete(peers, ch)
+			if len(peers) == 0 {
+				delete(h.subscribers, space)
+			}
+		}
+		h.mu.Unlock()
+	}
+}
+
+func (h *deviceEventHub) publish(value protocol.DeviceEvent) {
+	e := deviceEvent{id: h.nextID.Add(1), value: value}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for ch := range h.subscribers[value.SpaceID] {
+		select {
+		case ch <- e:
+		default:
+			// A stale client will reconcile from /state after reconnect. Do not
+			// let one slow stream block the service or other subscribers.
+		}
+	}
+}
+
+func (h *deviceEventHub) spaces() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	result := make([]string, 0, len(h.subscribers))
+	for space := range h.subscribers {
+		result = append(result, space)
+	}
+	return result
+}
+
+// deviceStatusLoop is the server-side lease check. Presence heartbeats keep
+// last_seen_at current; this loop turns a missing heartbeat into an idle or
+// offline event for any connected SSE clients without requiring a request
+// from the disappeared device.
+func (s *Service) deviceStatusLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		for _, space := range s.events.spaces() {
+			devices, err := s.app.Store().WorkspaceState(context.Background(), space)
+			if err != nil {
+				continue
+			}
+			for _, device := range devices {
+				status := connectionStatus(device)
+				key := space + "\x00" + device.DeviceID
+				s.statusMu.Lock()
+				previous, known := s.lastConnections[key]
+				s.lastConnections[key] = status
+				s.statusMu.Unlock()
+				if known && previous != status {
+					s.publishDevice(space, device)
+				}
+			}
+		}
+	}
+}
 
 func (s *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -58,13 +156,28 @@ func (s *Service) objectAuthorized(r *http.Request) bool {
 func (s *Service) authenticatedDevice(r *http.Request) (store.Device, error) {
 	id := strings.TrimSpace(r.Header.Get("X-Device-ID"))
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	var (
+		d   store.Device
+		err error
+	)
 	if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
-		return s.app.Store().AuthenticateDevice(r.Context(), id, strings.TrimSpace(auth[7:]))
+		d, err = s.app.Store().AuthenticateDevice(r.Context(), id, strings.TrimSpace(auth[7:]))
+	} else if s.app.Config().DevMode {
+		d, err = s.app.Store().GetActiveDevice(r.Context(), id)
+	} else {
+		return store.Device{}, store.ErrNotFound
 	}
-	if s.app.Config().DevMode {
-		return s.app.Store().GetActiveDevice(r.Context(), id)
+	if err == nil && d.Status == storeDeviceActive {
+		before, beforeErr := s.app.Store().GetDevicePresence(r.Context(), d.SpaceID, d.DeviceID)
+		_ = s.app.Store().TouchDevice(r.Context(), d.SpaceID, d.DeviceID)
+		if after, afterErr := s.app.Store().GetDevicePresence(r.Context(), d.SpaceID, d.DeviceID); afterErr == nil {
+			d = after
+			if beforeErr != nil || connectionStatus(before) != connectionStatus(after) {
+				s.publishDevice(after.SpaceID, after)
+			}
+		}
 	}
-	return store.Device{}, store.ErrNotFound
+	return d, err
 }
 
 func (s *Service) pairingStart(w http.ResponseWriter, r *http.Request) {
@@ -229,7 +342,14 @@ func (s *Service) register(w http.ResponseWriter, r *http.Request) {
 		s.error(w, protocol.ErrUnauthorized, "valid pairing token required", http.StatusUnauthorized)
 		return
 	}
-	d, token, err := s.app.Store().RegisterDeviceWithToken(r.Context(), req.SpaceID, req.DeviceID, req.Name)
+	var d store.Device
+	var token string
+	var err error
+	if req.PreviousDeviceID != "" {
+		d, token, err = s.app.Store().RenameDeviceWithToken(r.Context(), req.SpaceID, req.PreviousDeviceID, req.Name)
+	} else {
+		d, token, err = s.app.Store().RegisterDeviceWithToken(r.Context(), req.SpaceID, req.DeviceID, req.Name)
+	}
 	if err != nil {
 		s.storeError(w, err)
 		return
@@ -258,11 +378,22 @@ func (s *Service) revoke(w http.ResponseWriter, r *http.Request) {
 		s.storeError(w, err)
 		return
 	}
+	if presence, presenceErr := s.app.Store().GetDevicePresence(r.Context(), req.SpaceID, req.DeviceID); presenceErr == nil {
+		s.publishDevice(req.SpaceID, presence)
+	}
 	s.json(w, http.StatusOK, protocol.DeviceRevokeResponse{Device: protocol.Device{DeviceID: d.DeviceID, SpaceID: d.SpaceID, Name: d.Name, Status: d.Status}})
 }
 
 func (s *Service) state(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/v1/spaces/")
+	if strings.HasSuffix(path, "/events") {
+		s.eventsStream(w, r)
+		return
+	}
+	if strings.HasSuffix(path, "/presence") {
+		s.presence(w, r)
+		return
+	}
 	if strings.HasSuffix(path, "/operations/prepare") {
 		s.prepareOperation(w, r)
 		return
@@ -277,6 +408,10 @@ func (s *Service) state(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasSuffix(path, "/ack") {
 		s.ack(w, r)
+		return
+	}
+	if strings.HasSuffix(path, "/quota") {
+		s.quota(w, r)
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -298,11 +433,177 @@ func (s *Service) state(w http.ResponseWriter, r *http.Request) {
 		s.storeError(w, err)
 		return
 	}
-	result := protocol.WorkspaceState{SpaceID: space, Devices: make([]protocol.Device, 0, len(devices))}
+	result := protocol.WorkspaceState{SpaceID: space, ServerTime: time.Now().Format(time.RFC3339), Devices: make([]protocol.Device, 0, len(devices))}
+	result.CurrentRevision, _ = s.app.Store().CurrentRevision(r.Context(), space)
+	result.QuotaBytes, result.UsedBytes, err = s.app.Store().SpaceQuota(r.Context(), space)
+	if err != nil {
+		s.storeError(w, err)
+		return
+	}
 	for _, d := range devices {
-		result.Devices = append(result.Devices, protocol.Device{DeviceID: d.DeviceID, SpaceID: d.SpaceID, Name: d.Name, Status: d.Status})
+		result.Devices = append(result.Devices, s.protocolDevice(d))
 	}
 	s.json(w, http.StatusOK, result)
+}
+
+func (s *Service) quota(w http.ResponseWriter, r *http.Request) {
+	space := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/spaces/"), "/quota")
+	if strings.Contains(space, "/") || protocol.ValidateSpaceID(space) != nil {
+		s.error(w, protocol.ErrInvalidRequest, "invalid workspace", http.StatusBadRequest)
+		return
+	}
+	if !s.authorized(r, space) {
+		s.error(w, protocol.ErrUnauthorized, "active device authorization required", http.StatusUnauthorized)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		quota, used, err := s.app.Store().SpaceQuota(r.Context(), space)
+		if err != nil {
+			s.storeError(w, err)
+			return
+		}
+		s.json(w, http.StatusOK, protocol.SetQuotaResponse{SpaceID: space, QuotaBytes: quota, UsedBytes: used})
+	case http.MethodPut:
+		if !strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
+			s.error(w, protocol.ErrUnsupportedMedia, "content type must be application/json", http.StatusUnsupportedMediaType)
+			return
+		}
+		var req protocol.SetQuotaRequest
+		if !s.decode(w, r, &req) {
+			return
+		}
+		if err := protocol.ValidateSetQuotaRequest(req); err != nil {
+			s.error(w, protocol.ErrInvalidRequest, "invalid quota", http.StatusBadRequest)
+			return
+		}
+		quota, used, err := s.app.Store().SetSpaceQuota(r.Context(), space, req.QuotaBytes)
+		if err != nil {
+			s.storeError(w, err)
+			return
+		}
+		s.json(w, http.StatusOK, protocol.SetQuotaResponse{SpaceID: space, QuotaBytes: quota, UsedBytes: used})
+	default:
+		s.error(w, protocol.ErrMethodNotAllowed, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Service) presence(w http.ResponseWriter, r *http.Request) {
+	if !s.requireJSON(w, r, http.MethodPost) {
+		return
+	}
+	space := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/spaces/"), "/presence")
+	if strings.Contains(space, "/") || protocol.ValidateSpaceID(space) != nil {
+		s.error(w, protocol.ErrUnauthorized, "active device authorization required", http.StatusUnauthorized)
+		return
+	}
+	device, err := s.authenticatedDevice(r)
+	if err != nil || device.Status != storeDeviceActive || device.SpaceID != space {
+		s.error(w, protocol.ErrUnauthorized, "active device authorization required", http.StatusUnauthorized)
+		return
+	}
+	var req protocol.PresenceRequest
+	if !s.decode(w, r, &req) {
+		return
+	}
+	deviceID := strings.TrimSpace(r.Header.Get("X-Device-ID"))
+	before, beforeErr := s.app.Store().GetDevicePresence(r.Context(), space, deviceID)
+	d, err := s.app.Store().UpdatePresence(r.Context(), space, deviceID, req.ClientStatus, req.Monitoring, req.SyncCompleted)
+	if err != nil {
+		s.storeError(w, err)
+		return
+	}
+	if beforeErr != nil || before.ClientStatus != d.ClientStatus || before.Monitoring != d.Monitoring || before.LastSyncAt != d.LastSyncAt || connectionStatus(before) != connectionStatus(d) {
+		s.publishDevice(space, d)
+	}
+	s.json(w, http.StatusOK, protocol.PresenceResponse{Device: s.protocolDevice(d)})
+}
+
+func (s *Service) eventsStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.error(w, protocol.ErrMethodNotAllowed, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	space := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/spaces/"), "/events")
+	if strings.Contains(space, "/") || protocol.ValidateSpaceID(space) != nil {
+		s.error(w, protocol.ErrUnauthorized, "active device authorization required", http.StatusUnauthorized)
+		return
+	}
+	device, err := s.authenticatedDevice(r)
+	if err != nil || device.Status != storeDeviceActive || device.SpaceID != space {
+		s.error(w, protocol.ErrUnauthorized, "active device authorization required", http.StatusUnauthorized)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		s.error(w, protocol.ErrInternal, "streaming is not supported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	ch, unsubscribe := s.events.subscribe(space)
+	defer unsubscribe()
+	defer func() {
+		if disconnected, disconnectErr := s.app.Store().MarkDeviceDisconnected(context.Background(), space, device.DeviceID); disconnectErr == nil {
+			s.publishDevice(space, disconnected)
+		}
+	}()
+	_, _ = io.WriteString(w, ": connected\n\n")
+	flusher.Flush()
+	keepalive := time.NewTicker(20 * time.Second)
+	defer keepalive.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case event := <-ch:
+			body, err := json.Marshal(event.value)
+			if err != nil {
+				return
+			}
+			if _, err = io.WriteString(w, "id: "+strconv.FormatUint(event.id, 10)+"\nevent: device.status.changed\ndata: "+string(body)+"\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-keepalive.C:
+			if _, err := io.WriteString(w, ": keepalive\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+func (s *Service) publishDevice(space string, d store.Device) {
+	s.events.publish(protocol.DeviceEvent{SpaceID: space, Device: s.protocolDevice(d)})
+}
+
+func (s *Service) protocolDevice(d store.Device) protocol.Device {
+	return protocol.Device{DeviceID: d.DeviceID, SpaceID: d.SpaceID, Name: d.Name, Status: d.Status, ConnectionStatus: connectionStatus(d), ClientStatus: d.ClientStatus, Monitoring: d.Monitoring, LastSeenAt: serverProtocolTime(d.LastSeenAt), LastStatusAt: serverProtocolTime(d.LastStatusAt), LastSyncAt: serverProtocolTime(d.LastSyncAt), LastSeenRevision: d.LastSeenRevision, LastAppliedRevision: d.LastAppliedRevision, LastAckRevision: d.LastAckRevision, DeviceEpoch: d.DeviceEpoch}
+}
+
+func connectionStatus(d store.Device) string {
+	if d.Status != storeDeviceActive {
+		return "revoked"
+	}
+	if d.LastSeenAt == "" {
+		return "offline"
+	}
+	seen, err := parseServerTime(d.LastSeenAt)
+	if err != nil {
+		return "offline"
+	}
+	age := time.Since(seen)
+	switch {
+	case age <= 45*time.Second:
+		return "online"
+	case age <= 2*time.Minute:
+		return "idle"
+	default:
+		return "offline"
+	}
 }
 
 func spaceFromPath(path, suffix string) string {
@@ -445,7 +746,7 @@ func (s *Service) ack(w http.ResponseWriter, r *http.Request) {
 }
 
 func operationResponse(op store.Operation) protocol.Operation {
-	return protocol.Operation{OperationID: op.OperationID, SpaceID: op.SpaceID, OriginDeviceID: op.OriginDeviceID, ParentRevision: op.ParentRevision, Revision: op.Revision, PathID: op.PathID, OperationType: op.OperationType, FileManifestID: op.FileManifestID, BaseFileVersionID: op.BaseFileVersionID, DeviceLocalSequence: op.DeviceLocalSequence, State: op.State, CreatedAt: op.CreatedAt}
+	return protocol.Operation{OperationID: op.OperationID, SpaceID: op.SpaceID, OriginDeviceID: op.OriginDeviceID, ParentRevision: op.ParentRevision, Revision: op.Revision, PathID: op.PathID, OperationType: op.OperationType, FileManifestID: op.FileManifestID, BaseFileVersionID: op.BaseFileVersionID, DeviceLocalSequence: op.DeviceLocalSequence, SizeBytes: op.SizeBytes, State: op.State, CreatedAt: serverProtocolTime(op.CreatedAt)}
 }
 
 func (s *Service) authorized(r *http.Request, space string) bool {
@@ -516,6 +817,10 @@ func (s *Service) storeError(w http.ResponseWriter, err error) {
 		s.error(w, protocol.ErrRevisionTooOld, "revision is too old", http.StatusConflict)
 	case errors.Is(err, store.ErrObjectMissing):
 		s.error(w, protocol.ErrObjectMissing, "manifest or referenced object is missing", http.StatusConflict)
+	case errors.Is(err, store.ErrQuotaExceeded):
+		s.error(w, protocol.ErrQuotaExceeded, "workspace storage quota exceeded", http.StatusInsufficientStorage)
+	case errors.Is(err, store.ErrQuotaBelowUsed):
+		s.error(w, protocol.ErrInvalidRequest, "quota cannot be lower than used bytes", http.StatusBadRequest)
 	default:
 		s.error(w, protocol.ErrInternal, "internal server error", http.StatusInternalServerError)
 	}

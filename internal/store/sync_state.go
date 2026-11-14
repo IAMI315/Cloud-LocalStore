@@ -29,6 +29,6 @@ func (s *ClientStore) GetSyncState(ctx context.Context, spaceID string) (SyncSta
 }
 
 func (s *ClientStore) SaveSyncState(ctx context.Context, st SyncState) error {
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO sync_state(space_id,last_seen_revision,last_applied_revision,last_ack_revision,device_epoch,updated_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(space_id) DO UPDATE SET last_seen_revision=excluded.last_seen_revision,last_applied_revision=excluded.last_applied_revision,last_ack_revision=excluded.last_ack_revision,device_epoch=excluded.device_epoch,updated_at=CURRENT_TIMESTAMP`, st.SpaceID, st.LastSeenRevision, st.LastAppliedRevision, st.LastAckRevision, st.DeviceEpoch)
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO sync_state(space_id,last_seen_revision,last_applied_revision,last_ack_revision,device_epoch,updated_at) VALUES(?,?,?,?,?,datetime('now','localtime')) ON CONFLICT(space_id) DO UPDATE SET last_seen_revision=excluded.last_seen_revision,last_applied_revision=excluded.last_applied_revision,last_ack_revision=excluded.last_ack_revision,device_epoch=excluded.device_epoch,updated_at=datetime('now','localtime')`, st.SpaceID, st.LastSeenRevision, st.LastAppliedRevision, st.LastAckRevision, st.DeviceEpoch)
 	return err
 }

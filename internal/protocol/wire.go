@@ -30,6 +30,7 @@ const (
 	ErrObjectMissing    ErrorCode = "object_missing"
 	ErrHashMismatch     ErrorCode = "hash_mismatch"
 	ErrRateLimited      ErrorCode = "rate_limited"
+	ErrQuotaExceeded    ErrorCode = "quota_exceeded"
 )
 
 type APIError struct {
@@ -48,17 +49,28 @@ type ReadyResponse struct {
 }
 
 type Device struct {
-	DeviceID string `json:"device_id"`
-	SpaceID  string `json:"space_id"`
-	Name     string `json:"name"`
-	Status   string `json:"status"`
+	DeviceID            string `json:"device_id"`
+	SpaceID             string `json:"space_id"`
+	Name                string `json:"name"`
+	Status              string `json:"status"`
+	ConnectionStatus    string `json:"connection_status,omitempty"`
+	ClientStatus        string `json:"client_status,omitempty"`
+	Monitoring          bool   `json:"monitoring,omitempty"`
+	LastSeenAt          string `json:"last_seen_at,omitempty"`
+	LastStatusAt        string `json:"last_status_at,omitempty"`
+	LastSyncAt          string `json:"last_sync_at,omitempty"`
+	LastSeenRevision    int64  `json:"last_seen_revision,omitempty"`
+	LastAppliedRevision int64  `json:"last_applied_revision,omitempty"`
+	LastAckRevision     int64  `json:"last_ack_revision,omitempty"`
+	DeviceEpoch         int64  `json:"device_epoch,omitempty"`
 }
 
 type DeviceRegisterRequest struct {
-	SpaceID      string `json:"space_id"`
-	DeviceID     string `json:"device_id"`
-	Name         string `json:"name"`
-	PairingToken string `json:"pairing_token,omitempty"`
+	SpaceID          string `json:"space_id"`
+	DeviceID         string `json:"device_id"`
+	Name             string `json:"name"`
+	PairingToken     string `json:"pairing_token,omitempty"`
+	PreviousDeviceID string `json:"previous_device_id,omitempty"`
 }
 
 type DeviceRegisterResponse struct {
@@ -80,8 +92,39 @@ type DeviceRevokeResponse struct {
 }
 
 type WorkspaceState struct {
-	SpaceID string   `json:"space_id"`
-	Devices []Device `json:"devices"`
+	SpaceID         string   `json:"space_id"`
+	ServerTime      string   `json:"server_time,omitempty"`
+	CurrentRevision int64    `json:"current_revision,omitempty"`
+	QuotaBytes      int64    `json:"quota_bytes"`
+	UsedBytes       int64    `json:"used_bytes"`
+	Devices         []Device `json:"devices"`
+}
+
+type SetQuotaRequest struct {
+	QuotaBytes int64 `json:"quota_bytes"`
+}
+
+type SetQuotaResponse struct {
+	SpaceID    string `json:"space_id"`
+	QuotaBytes int64  `json:"quota_bytes"`
+	UsedBytes  int64  `json:"used_bytes"`
+}
+
+type PresenceRequest struct {
+	ClientStatus string `json:"client_status"`
+	Monitoring   bool   `json:"monitoring"`
+	// SyncCompleted is an event marker; the server stamps its own local time
+	// instead of accepting a client-generated timestamp.
+	SyncCompleted bool `json:"sync_completed,omitempty"`
+}
+
+type PresenceResponse struct {
+	Device Device `json:"device"`
+}
+
+type DeviceEvent struct {
+	SpaceID string `json:"space_id"`
+	Device  Device `json:"device"`
 }
 
 // OperationPrepareRequest contains the immutable metadata for an operation.
@@ -113,6 +156,7 @@ type Operation struct {
 	FileManifestID      string `json:"file_manifest_id,omitempty"`
 	BaseFileVersionID   string `json:"base_file_version_id,omitempty"`
 	DeviceLocalSequence int64  `json:"device_local_sequence"`
+	SizeBytes           int64  `json:"size_bytes,omitempty"`
 	State               string `json:"state"`
 	CreatedAt           string `json:"created_at,omitempty"`
 }
@@ -163,8 +207,9 @@ type ObjectUploadResponse struct {
 }
 
 const (
-	MaxIDLength   = 128
-	MaxNameLength = 128
+	MaxIDLength     = 128
+	MaxNameLength   = 128
+	MaxPathIDLength = 4096
 )
 
 func ValidateDeviceRegisterRequest(r DeviceRegisterRequest) error {
@@ -188,6 +233,13 @@ func ValidateDeviceRevokeRequest(r DeviceRevokeRequest) error {
 
 func ValidateSpaceID(id string) error { return validateID("space_id", id) }
 
+func ValidateSetQuotaRequest(r SetQuotaRequest) error {
+	if r.QuotaBytes < 0 || r.QuotaBytes > 1<<50 {
+		return errors.New("quota_bytes is out of range")
+	}
+	return nil
+}
+
 func ValidateOperationPrepareRequest(r OperationPrepareRequest) error {
 	if err := validateID("operation_id", r.OperationID); err != nil {
 		return err
@@ -200,7 +252,7 @@ func ValidateOperationPrepareRequest(r OperationPrepareRequest) error {
 	if r.ParentRevision < 0 || r.DeviceLocalSequence < 0 {
 		return errors.New("revision values must be non-negative")
 	}
-	if err := validateID("path_id", r.PathID); err != nil {
+	if err := validatePathID(r.PathID); err != nil {
 		return err
 	}
 	if err := validateID("operation_type", r.OperationType); err != nil {
@@ -267,6 +319,21 @@ func validateID(field, value string) error {
 	for _, r := range value {
 		if r < 0x21 || r == '/' || r == '\\' || r == '"' {
 			return fmt.Errorf("%s contains invalid characters", field)
+		}
+	}
+	return nil
+}
+
+func validatePathID(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return errors.New("path_id is required")
+	}
+	if len(value) > MaxPathIDLength {
+		return errors.New("path_id is too long")
+	}
+	for _, r := range value {
+		if r < 0x21 || r == '/' || r == '\\' || r == '"' {
+			return errors.New("path_id contains invalid characters")
 		}
 	}
 	return nil

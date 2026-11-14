@@ -3,47 +3,53 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Cloud-LocalStore 本地控制台</title>
+  <title>Cloud LocalStore</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <main class="shell">
-    <header class="app-header">
-      <div class="brand"><span class="brand-mark">☁</span><div><p class="eyebrow">CLOUD LOCALSTORE</p><h1>文件</h1></div></div>
-      <div class="header-actions"><span id="network" class="pill">网络：未配置</span><button id="settings" class="icon-button" title="连接与本地库设置">⚙</button></div>
-    </header>
-
-    <section id="settings-panel" class="panel setup hidden">
-      <div class="panel-heading"><h2>连接与本地库设置</h2><button id="close-settings" class="secondary">关闭</button></div>
-      <h3>本地库</h3>
-      <form id="library-form">
-        <label>同步目录<div class="input-with-action"><input id="root" name="root" placeholder="例如：D:\\CloudDemo"><button id="browse" type="button" class="secondary">浏览</button></div></label>
-        <label>数据目录<input id="data-dir" name="data_dir" placeholder="留空则使用同步目录下的 .clouddrive"></label>
-        <div class="actions"><button type="submit">打开本地库</button><button id="init" type="button" class="secondary">初始化并打开</button></div>
-      </form>
-      <h3>服务端连接</h3><form id="connection-form" class="connection"><label>服务地址<input id="server-url" placeholder="http://127.0.0.1:8080"></label><label>空间<input id="space-id"></label><label>设备<input id="device-id"></label><label>设备令牌<input id="device-token" type="password"></label><label>配对码<input id="pairing-token" type="password"></label><div class="actions"><button type="submit">保存连接</button><button id="sync" type="button" class="secondary">立即同步</button></div></form>
-      <p id="message" class="message" role="status"></p>
+  <main class="app-shell">
+    <aside class="sidebar" aria-label="主导航">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">⌁</span><div><strong>Cloud</strong><strong>LocalStore</strong></div></div>
+      <nav class="primary-nav">
+        <button class="nav-item active" data-nav-target="overview"><span class="nav-icon">⌂</span>文件</button>
+        <button class="nav-item" data-nav-target="tasks"><span class="nav-icon">⟳</span>同步任务</button>
+        <button class="nav-item" data-nav-target="versions"><span class="nav-icon">▱</span>历史版本</button>
+        <button class="nav-item" data-nav-target="devices"><span class="nav-icon">▣</span>设备</button>
+        <button class="nav-item" id="settings" data-nav-target="settings"><span class="nav-icon">⚙</span>设置</button>
+      </nav>
+    </aside>
+    <section class="workspace">
+      <div class="workspace-grid">
+        <div class="workspace-main">
+          <section id="files" class="files-page">
+            <div class="address-row">
+              <div class="nav-actions"><button id="go-back" class="icon-button" title="后退" aria-label="后退">←</button><button id="go-forward" class="icon-button" title="前进" aria-label="前进">→</button><button id="go-up" class="icon-button" title="上一级" aria-label="上一级">↑</button></div>
+              <div class="address-bar" title=""><span class="address-icon">▸</span><nav id="breadcrumbs" aria-label="当前位置"></nav><strong id="current-root-display" class="address-root-hint">尚未打开本地库</strong></div>
+              <label class="search-box"><span>⌕</span><input id="file-search" placeholder="搜索文件或文件夹"><kbd>Ctrl+F</kbd></label>
+              <button id="quick-sync" class="icon-button" title="立即同步" aria-label="立即同步">⟳</button>
+              <button id="conn-badge" class="conn-badge" title="连接设置" aria-label="连接设置"><span class="status-dot"></span><span id="conn-badge-text">未配置</span></button>
+            </div>
+            <div class="command-row">
+              <div class="command-group"><div class="new-menu"><button id="new-folder" class="primary-action">＋ 新建 <span class="button-caret">⌄</span></button><div id="new-menu-list" class="new-menu-list hidden"><button data-create="folder">新建文件夹</button><button data-create="file">新建文件</button></div></div><button id="refresh-action" class="secondary">⟳ 刷新</button><button id="scan" class="secondary">⌕ 扫描</button></div>
+              <span class="command-divider"></span><div class="command-group"><button id="view-details" class="view-button active" title="详细信息" aria-label="详细信息">☷</button><button id="view-icons" class="view-button" title="图标视图" aria-label="图标视图">▦</button></div>
+              <span class="command-divider"></span><div class="command-group"><select id="sort-select" class="compact-select" aria-label="排序方式"><option value="modified">按修改时间</option><option value="name">按名称</option><option value="size">按大小</option></select><select id="type-filter" class="compact-select" aria-label="文件类型"><option value="all">全部文件</option><option value="folder">文件夹</option><option value="image">图片</option><option value="text">文本</option><option value="file">其他文件</option></select></div><span class="toolbar-spacer"></span><button id="new-file" class="secondary hidden">＋ 新建文件</button>
+            </div>
+            <div class="manager-body"><div class="browser-pane"><div id="details-view" class="table-wrap"><table class="file-manager-table"><thead><tr><th class="check-col"><input type="checkbox" id="select-all" aria-label="全选"></th><th class="sortable" data-sort="name">名称 <span class="sort-mark">↑</span></th><th>状态</th><th class="sortable" data-sort="modified">修改时间</th><th class="sortable" data-sort="size">大小</th><th class="actions-col"></th></tr></thead><tbody id="browser-files"><tr><td colspan="6" class="muted">打开本地库后显示文件</td></tr></tbody></table></div><div id="icons-view" class="icons-view hidden"></div><div id="empty-state" class="empty-state hidden"><p>尚未打开本地库</p><button id="empty-select-folder" class="primary-action">□ 选择同步文件夹</button></div></div><aside id="details-drawer" class="details-drawer" aria-label="文件详情" aria-hidden="true"><div class="drawer-heading"><div><span class="drawer-eyebrow">文件详情</span><strong id="drawer-title">尚未选择文件</strong></div><button id="drawer-close" class="icon-button" type="button" title="关闭详情" aria-label="关闭详情">×</button></div><p id="drawer-status" class="page-muted">选择单个文件查看属性和版本</p><dl id="drawer-properties" class="properties-grid"></dl><section class="drawer-section"><div class="drawer-section-heading"><h3>历史版本</h3><span id="drawer-version-count" class="page-muted">-</span></div><div id="drawer-version-list" class="drawer-version-list"></div><button id="drawer-open-versions" class="secondary" type="button">打开完整历史</button></section></aside></div>
+            <div class="status-row"><span id="manager-count">已选 0 项 · 共 0 项</span><span class="status-sep"></span><span id="status-sync">等待连接</span><span class="status-sep"></span><button id="status-pending" class="status-link">0 待同步</button><span class="toolbar-spacer"></span><button id="status-versions" class="status-link">- 版本</button><button id="status-devices" class="status-link">- 设备</button><span class="status-sep"></span><span class="storage-summary"><span>□</span><strong id="storage-used">-</strong></span></div>
+          </section>
+        </div>
+      </div>
+      <section id="tasks-page" class="page-panel hidden"><div class="page-heading"><div><p class="eyebrow">SYNC CENTER</p><h1>同步任务</h1><p class="page-subtitle">查看同步状态、冲突和最近任务</p></div><div class="page-actions"><button id="tasks-sync" class="primary-action">⟳ 立即同步</button><button id="tasks-scan" class="secondary">⌕ 扫描文件</button></div></div><div class="page-stat-grid"><article class="page-stat"><span>待处理任务</span><strong id="tasks-pending">0</strong><small id="tasks-pending-detail">无待处理任务</small></article><article class="page-stat"><span>实时监控</span><strong id="tasks-monitoring">未启用</strong><small id="tasks-monitoring-detail">等待本地库打开</small></article><article class="page-stat"><span>上次同步</span><strong id="tasks-last-sync">刚刚</strong><small>当前客户端</small></article></div><section class="panel task-monitor-card"><div class="panel-heading"><h2>同步服务</h2><button id="tasks-monitor" class="secondary">启动监控</button></div><p id="tasks-service-detail" class="page-muted">文件变更会自动进入同步队列。</p></section><section class="panel activity-page-card"><div class="panel-heading"><h2>最近活动</h2><span class="page-muted">当前客户端</span></div><ul class="activity-list"><li><span class="activity-dot"></span><span>同步服务已启动</span><time>刚刚</time></li><li><span class="activity-dot"></span><span>本地文件监控状态已更新</span><time>刚刚</time></li><li><span class="activity-dot"></span><span id="tasks-activity-detail">等待文件变化</span><time>--</time></li></ul></section></section>
+      <section id="devices-page" class="page-panel hidden"><div class="page-heading"><div><p class="eyebrow">DEVICE MANAGEMENT</p><h1>设备</h1><p class="page-subtitle">服务端状态和已配对设备</p></div><button id="devices-refresh" class="secondary">⟳ 刷新状态</button></div><section class="panel device-server-card"><div class="device-detail-icon">◉</div><div class="device-server-copy"><h2 id="devices-server-status">服务器未连接</h2><p id="devices-server-url">尚未配置服务端</p><small id="devices-server-meta">状态数据等待加载</small></div><span id="devices-server-badge" class="online-badge">未知</span></section><div class="device-summary-grid"><article class="panel device-summary-card"><span>已注册设备</span><strong id="devices-total">0</strong><small>服务端设备总数</small></article><article class="panel device-summary-card"><span>在线</span><strong id="devices-online">0</strong><small>最近 90 秒有心跳</small></article><article class="panel device-summary-card"><span>空闲</span><strong id="devices-idle">0</strong><small>最近 5 分钟有活动</small></article><article class="panel device-summary-card"><span>离线</span><strong id="devices-offline">0</strong><small>等待客户端恢复</small></article></div><section class="panel device-table-card"><div class="panel-heading"><h2>设备列表</h2><span id="devices-updated" class="page-muted">等待状态</span></div><div class="table-wrap"><table><thead><tr><th>设备</th><th>连接状态</th><th>客户端状态</th><th>实时监控</th><th>最后活动</th></tr></thead><tbody id="devices-list"><tr><td colspan="5" class="muted">尚未加载设备状态</td></tr></tbody></table></div></section><section class="panel device-help-card"><h2>设备配对</h2><p class="page-muted">新电脑请在设置页填写服务地址、空间、设备 ID 和配对码。保存连接后，设备会出现在这里。</p><button id="devices-open-settings" class="secondary">打开连接设置</button></section></section>
+      <section id="settings-panel" class="panel setup page-panel hidden"><div class="panel-heading"><h2>连接与本地库设置</h2><button id="close-settings" class="secondary">返回总览</button></div><h3>本地库</h3><form id="library-form"><label>同步目录<div class="input-with-action"><input id="root" name="root" placeholder="例如：D:\\CloudDemo"><button id="browse" type="button" class="secondary">浏览</button></div></label><label>数据目录<input id="data-dir" name="data_dir" placeholder="留空则使用同步目录下的 .clouddrive"></label><div class="actions"><button type="submit">打开本地库</button><button id="init" type="button" class="secondary">初始化并打开</button></div></form><h3>启动行为</h3><label class="setting-toggle"><input id="autostart" type="checkbox"><span><strong>开机自动启动</strong><small>登录 Windows 后自动运行 Cloud LocalStore 并驻留托盘</small></span></label><p id="autostart-hint" class="page-muted">正在读取启动设置</p><h3>服务端连接</h3><form id="connection-form" class="connection"><label>服务地址<input id="server-url" placeholder="http://127.0.0.1:8080"></label><label>空间<input id="space-id"></label><label>设备<input id="device-id"></label><label>设备令牌<input id="device-token" type="password"></label><label>配对码<input id="pairing-token" type="password"></label><div class="actions"><button type="submit">保存连接</button><button id="sync" type="button" class="secondary">立即同步</button></div></form><form id="quota-form" class="connection quota-form"><label>空间容量（GB）<input id="quota-gb" type="number" min="0" max="1125899906842" step="0.1" placeholder="服务端默认"></label><div class="actions"><button type="submit">保存容量</button><button id="quota-reset" type="button" class="secondary">恢复服务端默认</button></div><p id="quota-hint" class="page-muted">连接服务端后可设置空间容量</p></form><p id="message" class="message" role="status"></p></section>
+      <section id="conflicts-panel" class="panel page-panel hidden"><div class="panel-heading"><h2>同步冲突</h2><span class="muted">选择要保留的版本</span></div><div class="table-wrap"><table><thead><tr><th>冲突副本</th><th>原路径</th><th>修改日期</th><th></th></tr></thead><tbody id="conflicts-list"></tbody></table></div></section>
+      <section id="preview-panel" class="panel preview-panel hidden"><div class="panel-heading"><h2 id="preview-title">预览</h2><button id="close-preview" class="secondary">关闭</button></div><div id="preview-content"></div></section>
+      <section id="versions-panel" class="panel page-panel hidden"><div class="panel-heading"><h2>历史版本：<code id="selected-path">尚未选择文件</code></h2><button id="close-versions" class="secondary">返回文件</button></div><p id="versions-page-hint" class="page-muted">在文件页面选择文件后，可以从这里查看和恢复历史版本。</p><div class="table-wrap"><table><thead><tr><th>版本 ID</th><th>时间</th><th>Manifest</th><th></th></tr></thead><tbody id="versions-list"></tbody></table></div></section>
+      <section id="properties-panel" class="panel hidden"><div class="panel-heading"><h2>属性</h2><button id="close-properties" class="secondary">关闭</button></div><dl id="properties-list" class="properties-grid"></dl></section>
     </section>
-
-    <section class="stats" aria-label="状态">
-      <div><span>活跃文件</span><strong id="active-files">-</strong></div>
-      <div><span>版本总数</span><strong id="versions">-</strong></div>
-      <div><span>已删除路径</span><strong id="tombstones">-</strong></div>
-      <div><span>监控</span><strong id="monitoring">未运行</strong></div>
-    </section>
-
-    <section class="panel file-manager">
-      <div class="manager-toolbar"><div class="nav-actions"><button id="go-back" class="icon-button" title="后退">←</button><button id="go-forward" class="icon-button" title="前进">→</button><button id="go-up" class="icon-button" title="上一级">↑</button><button id="refresh-browser" class="icon-button" title="刷新">⟳</button></div><div class="address-bar"><span>⌂</span><nav id="breadcrumbs" aria-label="当前位置"></nav></div><label class="search-box"><span>⌕</span><input id="file-search" placeholder="搜索当前文件夹"></label></div>
-      <div class="file-toolbar"><button id="new-folder">新建文件夹</button><button id="new-file" class="secondary">新建文件</button><button id="rename-file" class="secondary">重命名</button><button id="delete-file" class="danger">删除</button><span class="toolbar-spacer"></span><button id="view-details" class="view-button active" title="详细信息">☷</button><button id="view-icons" class="view-button" title="大图标">▦</button><button id="scan" class="secondary">扫描</button><button id="monitor" class="secondary">启动监控</button></div>
-      <div class="manager-body"><aside class="tree-panel"><div class="tree-title">位置</div><div id="directory-tree" class="directory-tree"></div><div class="tree-status"><span id="active-files-small">0</span> 个文件</div></aside><div class="browser-pane"><div class="selection-hint" id="selection-hint">未选择项目</div><div id="details-view" class="table-wrap"><table><thead><tr><th class="sortable" data-sort="name">名称</th><th class="sortable" data-sort="modified">修改日期</th><th>类型</th><th class="sortable" data-sort="size">大小</th></tr></thead><tbody id="browser-files"><tr><td colspan="4" class="muted">打开本地库后显示文件</td></tr></tbody></table></div><div id="icons-view" class="icons-view hidden"></div></div></div>
-    </section>
-
-    <section id="conflicts-panel" class="panel hidden"><div class="panel-heading"><h2>同步冲突</h2><span class="muted">选择要保留的版本</span></div><div class="table-wrap"><table><thead><tr><th>冲突副本</th><th>原路径</th><th>修改日期</th><th></th></tr></thead><tbody id="conflicts-list"></tbody></table></div></section>
-
-    <section id="preview-panel" class="panel preview-panel hidden"><div class="panel-heading"><h2 id="preview-title">预览</h2><button id="close-preview" class="secondary">关闭</button></div><div id="preview-content"></div></section>
-
-    <section id="versions-panel" class="panel hidden"><div class="panel-heading"><h2>历史版本：<code id="selected-path"></code></h2><button id="close-versions" class="secondary">关闭</button></div><div class="table-wrap"><table><thead><tr><th>版本 ID</th><th>时间</th><th>Manifest</th><th></th></tr></thead><tbody id="versions-list"></tbody></table></div></section>
   </main>
+  <div id="context-menu" class="context-menu hidden" role="menu"><button data-context-action="open">打开</button><button data-context-action="copy">复制</button><button data-context-action="cut">剪切</button><button data-context-action="paste">粘贴</button><div class="menu-separator"></div><button data-context-action="rename">重命名</button><button data-context-action="delete">删除</button><button data-context-action="properties">属性</button></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/app.js"></script>
 </body>
 </html>

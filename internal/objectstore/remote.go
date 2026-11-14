@@ -18,11 +18,12 @@ import (
 // objects with a VPS. It deliberately contains no watcher or reconciliation
 // loop; callers can compose it with the local object store and sync planner.
 type RemoteClient struct {
-	BaseURL     string
-	DeviceID    string
-	SpaceID     string
-	DeviceToken string
-	HTTP        *http.Client
+	BaseURL          string
+	DeviceID         string
+	PreviousDeviceID string
+	SpaceID          string
+	DeviceToken      string
+	HTTP             *http.Client
 }
 
 var defaultRemoteHTTPClient = &http.Client{Timeout: 30 * time.Second}
@@ -31,7 +32,7 @@ var defaultRemoteHTTPClient = &http.Client{Timeout: 30 * time.Second}
 // credential. The pairing token is sent only to the registration endpoint.
 func (c *RemoteClient) RegisterDevice(ctx context.Context, name, pairingToken string) (protocol.DeviceRegisterResponse, error) {
 	var out protocol.DeviceRegisterResponse
-	req := protocol.DeviceRegisterRequest{SpaceID: c.SpaceID, DeviceID: c.DeviceID, Name: name, PairingToken: pairingToken}
+	req := protocol.DeviceRegisterRequest{SpaceID: c.SpaceID, DeviceID: c.DeviceID, Name: name, PairingToken: pairingToken, PreviousDeviceID: c.PreviousDeviceID}
 	if err := c.postJSON(ctx, "/v1/devices/register", req, &out); err != nil {
 		return out, err
 	}
@@ -69,7 +70,7 @@ func (c *RemoteClient) ListOperations(ctx context.Context, after int64) (protoco
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return out, readRemoteError(resp)
+		return out, fmt.Errorf("GET /v1/spaces/%s/operations: %w", c.SpaceID, readRemoteError(resp))
 	}
 	err = json.NewDecoder(resp.Body).Decode(&out)
 	return out, err
@@ -81,6 +82,68 @@ func (c *RemoteClient) Ack(ctx context.Context, req protocol.AckRequest) (protoc
 		return out, err
 	}
 	return out, nil
+}
+
+func (c *RemoteClient) WorkspaceState(ctx context.Context) (protocol.WorkspaceState, error) {
+	var out protocol.WorkspaceState
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint("/v1/spaces/"+c.SpaceID+"/state"), nil)
+	if err != nil {
+		return out, err
+	}
+	c.auth(req)
+	resp, err := c.client().Do(req)
+	if err != nil {
+		return out, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return out, fmt.Errorf("GET /v1/spaces/%s/state: %w", c.SpaceID, readRemoteError(resp))
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (c *RemoteClient) SetQuota(ctx context.Context, quotaBytes int64) (protocol.SetQuotaResponse, error) {
+	var out protocol.SetQuotaResponse
+	if err := c.putJSON(ctx, "/v1/spaces/"+c.SpaceID+"/quota", protocol.SetQuotaRequest{QuotaBytes: quotaBytes}, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (c *RemoteClient) SendPresence(ctx context.Context, req protocol.PresenceRequest) (protocol.PresenceResponse, error) {
+	var out protocol.PresenceResponse
+	if err := c.postJSON(ctx, "/v1/spaces/"+c.SpaceID+"/presence", req, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (c *RemoteClient) OpenEvents(ctx context.Context) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint("/v1/spaces/"+c.SpaceID+"/events"), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	c.auth(req)
+	client := c.HTTP
+	if client == nil {
+		// Event streams are intentionally long-lived. Keep the regular request
+		// timeout for metadata/object calls, but let the stream be cancelled by
+		// its context or by the caller's reconnect loop.
+		client = &http.Client{}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode/100 != 2 {
+		defer resp.Body.Close()
+		return nil, fmt.Errorf("GET /v1/spaces/%s/events: %w", c.SpaceID, readRemoteError(resp))
+	}
+	return resp, nil
 }
 
 func (c *RemoteClient) postJSON(ctx context.Context, path string, value, out any) error {
@@ -100,7 +163,29 @@ func (c *RemoteClient) postJSON(ctx context.Context, path string, value, out any
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return readRemoteError(resp)
+		return fmt.Errorf("POST %s: %w", path, readRemoteError(resp))
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (c *RemoteClient) putJSON(ctx context.Context, path string, value, out any) error {
+	b, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.endpoint(path), bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.auth(req)
+	resp, err := c.client().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("PUT %s: %w", path, readRemoteError(resp))
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
@@ -135,7 +220,7 @@ func (c *RemoteClient) Exists(ctx context.Context, hashes []domain.ChunkHash) (m
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return nil, readRemoteError(resp)
+		return nil, fmt.Errorf("POST /v1/objects/exists: %w", readRemoteError(resp))
 	}
 	var decoded protocol.ObjectExistsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
@@ -174,7 +259,7 @@ func (c *RemoteClient) Upload(ctx context.Context, hash domain.ChunkHash, r io.R
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return readRemoteError(resp)
+		return fmt.Errorf("POST /v1/objects/upload: %w", readRemoteError(resp))
 	}
 	return nil
 }
@@ -199,7 +284,7 @@ func (c *RemoteClient) Download(ctx context.Context, hash domain.ChunkHash) (io.
 	}
 	if resp.StatusCode/100 != 2 {
 		defer resp.Body.Close()
-		return nil, readRemoteError(resp)
+		return nil, fmt.Errorf("GET /v1/objects/%s: %w", hash, readRemoteError(resp))
 	}
 	return resp.Body, nil
 }

@@ -1,20 +1,36 @@
-# Local build outputs and toolchain caches
+# Local build and toolchain state
 build-temp/
+.go-build/
+.go-cache/
+.go-mod-cache/
+.go-tmp/
 go-cache/
 go-mod-cache/
 go-tmp/
 
-# Runtime state, credentials, databases, and object cache
+# Runtime state and secrets
 data/
+testFold/
 CloudLocalStore-State/
 CloudLocalStore-Sync/
 *.db
 *.db-shm
 *.db-wal
 *.log
+server.conf
 
-# Local editor and OS files
-.vscode/
-.idea/
+# Local binaries
+*.exe
+*.raw.exe
+*.attach
+*.background
+*.final
+*.handoff-test
+*.new
+*.new2
+*.new3
+*.new4
+*.takeover
+*.tmp
+.DS_Store
 Thumbs.db
-Desktop.ini

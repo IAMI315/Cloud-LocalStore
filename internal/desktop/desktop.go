@@ -38,16 +38,18 @@ func (o Options) normalized() Options {
 // Instance is a running local console. The HTTP server owns the local library,
 // monitor and database resources, and Shutdown closes all of them together.
 type Instance struct {
-	server   *gui.Server
-	listener net.Listener
-	serveErr chan error
-	once     sync.Once
-	shutdown chan struct{}
+	server    *gui.Server
+	listener  net.Listener
+	serveErr  chan error
+	beginOnce sync.Once
+	once      sync.Once
+	shutdown  chan struct{}
 }
 
 func Start(options Options) (*Instance, error) {
 	options = options.normalized()
 	server := gui.New(options.Addr)
+	server.SetAutoStartController(getAutoStart, setAutoStart, autoStartSupported())
 	if exe, err := os.Executable(); err == nil {
 		base := filepath.Dir(exe)
 		if err := server.OpenDefault(filepath.Join(base, "CloudLocalStore-Sync"), filepath.Join(base, "CloudLocalStore-State")); err != nil {
@@ -75,10 +77,20 @@ func (i *Instance) URL() string { return i.server.URL() }
 
 func (i *Instance) Wait() error { return <-i.serveErr }
 
+// BeginShutdown marks the instance as closing without waiting on monitor or
+// HTTP work. The native window can call this from its UI thread safely; the
+// normal Shutdown path performs the blocking cleanup after the window exits.
+func (i *Instance) BeginShutdown() {
+	i.beginOnce.Do(func() {
+		close(i.shutdown)
+		i.server.BeginShutdown()
+	})
+}
+
 func (i *Instance) Shutdown(ctx context.Context) error {
 	var err error
+	i.BeginShutdown()
 	i.once.Do(func() {
-		close(i.shutdown)
 		err = i.server.Shutdown(ctx)
 	})
 	return err
@@ -113,7 +125,7 @@ func Run(ctx context.Context, options Options, out io.Writer) error {
 	}
 	// WebView2 owns a Windows message loop and must be created and run on the
 	// process UI thread. The local HTTP service runs in its own goroutine.
-	if err := showWindow(url); err != nil {
+	if err := showWindow(url, instance.BeginShutdown); err != nil {
 		showWindowError(err)
 		return err
 	}

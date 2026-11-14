@@ -34,7 +34,7 @@ func (s *ClientStore) ReplaceFileIndexWithOptions(ctx context.Context, records [
 	// historical/version bookkeeping, but mark paths absent from this scan as
 	// tombstones before upserting the paths that are still present.
 	if markMissing {
-		if _, err := tx.ExecContext(ctx, `UPDATE files SET tombstone = 1, updated_at = CURRENT_TIMESTAMP`); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE files SET tombstone = 1, updated_at = datetime('now','localtime') WHERE tombstone = 0`); err != nil {
 			return fmt.Errorf("mark missing files: %w", err)
 		}
 	}
@@ -44,7 +44,7 @@ func (s *ClientStore) ReplaceFileIndexWithOptions(ctx context.Context, records [
 		// of a delete followed by an unrelated create.
 		if record.PlatformID != "" {
 			if _, err := tx.ExecContext(ctx, `
-UPDATE files SET normalized_path = ?, tombstone = 0, updated_at = CURRENT_TIMESTAMP
+UPDATE files SET normalized_path = ?, tombstone = 0, updated_at = datetime('now','localtime')
 WHERE platform_id = ? AND normalized_path <> ?`, record.NormalizedPath, record.PlatformID, record.NormalizedPath); err != nil {
 				return fmt.Errorf("detect rename %q: %w", record.NormalizedPath, err)
 			}
@@ -58,7 +58,15 @@ ON CONFLICT(normalized_path) DO UPDATE SET
  mtime_ns = excluded.mtime_ns,
  platform_id = excluded.platform_id,
  tombstone = 0,
- updated_at = CURRENT_TIMESTAMP`, record.FileID, record.NormalizedPath, record.FileType, record.Size, record.MTimeNS, record.PlatformID); err != nil {
+ updated_at = CASE
+   WHEN files.file_type <> excluded.file_type
+     OR files.size <> excluded.size
+     OR files.mtime_ns <> excluded.mtime_ns
+     OR files.platform_id <> excluded.platform_id
+     OR files.tombstone <> 0
+   THEN datetime('now','localtime')
+   ELSE files.updated_at
+ END`, record.FileID, record.NormalizedPath, record.FileType, record.Size, record.MTimeNS, record.PlatformID); err != nil {
 			return fmt.Errorf("upsert file %q: %w", record.NormalizedPath, err)
 		}
 	}

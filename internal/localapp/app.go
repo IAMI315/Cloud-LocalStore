@@ -295,7 +295,14 @@ type fileState struct {
 type Status struct {
 	Root, DataDir                     string
 	ActiveFiles, Versions, Tombstones int
+	Pending                           int
+	LastSyncAt                        string
+	TotalBytes, QuotaBytes            int64
+	TodayFiles, TodayVersions         int
+	IndexUpdatedAt                    string
 }
+
+const DefaultQuotaBytes int64 = 5 * 1024 * 1024 * 1024
 
 type FileEntry struct {
 	Path      string `json:"path"`
@@ -328,12 +335,68 @@ func (a *App) Files(ctx context.Context) ([]FileEntry, error) {
 
 func (a *App) Status(ctx context.Context) (Status, error) {
 	s := Status{Root: a.Root, DataDir: a.DataDir}
-	for q, d := range map[string]*int{`SELECT COUNT(*) FROM files WHERE tombstone=0`: &s.ActiveFiles, `SELECT COUNT(*) FROM file_versions`: &s.Versions, `SELECT COUNT(*) FROM files WHERE tombstone=1`: &s.Tombstones} {
+	for q, d := range map[string]*int{
+		`SELECT COUNT(*) FROM files WHERE tombstone=0`:                                              &s.ActiveFiles,
+		`SELECT COUNT(*) FROM file_versions`:                                                        &s.Versions,
+		`SELECT COUNT(*) FROM files WHERE tombstone=1`:                                              &s.Tombstones,
+		`SELECT COUNT(*) FROM files WHERE tombstone=0 AND date(updated_at)=date('now','localtime')`: &s.TodayFiles,
+		`SELECT COUNT(*) FROM file_versions WHERE date(created_at)=date('now','localtime')`:         &s.TodayVersions,
+	} {
 		if err := a.DB.QueryRowContext(ctx, q).Scan(d); err != nil {
 			return s, err
 		}
 	}
+	if err := a.DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(size),0) FROM files WHERE file_type='regular' AND tombstone=0`).Scan(&s.TotalBytes); err != nil {
+		return s, err
+	}
+	if err := a.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sync_outbox WHERE state <> 'committed'`).Scan(&s.Pending); err != nil {
+		return s, err
+	}
+	var pendingRenames int
+	if err := a.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM pending_rename_deletes`).Scan(&pendingRenames); err != nil {
+		return s, err
+	}
+	s.Pending += pendingRenames
+	if err := a.DB.QueryRowContext(ctx, `SELECT COALESCE(MAX(updated_at),'') FROM sync_state`).Scan(&s.LastSyncAt); err != nil {
+		return s, err
+	}
+	if err := a.DB.QueryRowContext(ctx, `SELECT COALESCE(MAX(updated_at),'') FROM files`).Scan(&s.IndexUpdatedAt); err != nil {
+		return s, err
+	}
+	s.LastSyncAt = localProtocolTime(s.LastSyncAt)
+	s.IndexUpdatedAt = localProtocolTime(s.IndexUpdatedAt)
+	s.QuotaBytes = DefaultQuotaBytes
 	return s, nil
+}
+
+// FileStatus compares the current filesystem metadata with the local index
+// and outbox so the browser can distinguish synchronized and pending files.
+func (a *App) FileStatus(ctx context.Context, path string, size, mtimeNS int64, conflictName bool) (string, error) {
+	if conflictName {
+		return "conflict", nil
+	}
+	var indexedSize, indexedMTime int64
+	var tombstone, conflict, pending int
+	err := a.DB.QueryRowContext(ctx, `
+SELECT f.size, f.mtime_ns, f.tombstone,
+       EXISTS(SELECT 1 FROM file_versions v WHERE v.version_id=f.current_version_id AND v.is_conflict=1),
+       EXISTS(SELECT 1 FROM sync_outbox o WHERE o.normalized_path=? AND o.state <> 'committed') OR
+       EXISTS(SELECT 1 FROM pending_rename_deletes p WHERE p.normalized_path=?)
+FROM files f WHERE f.normalized_path=? AND f.file_type='regular'`, path, path, path).
+		Scan(&indexedSize, &indexedMTime, &tombstone, &conflict, &pending)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "pending", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if conflict != 0 {
+		return "conflict", nil
+	}
+	if tombstone != 0 || pending != 0 || indexedSize != size || indexedMTime != mtimeNS {
+		return "pending", nil
+	}
+	return "synced", nil
 }
 
 func (a *App) Versions(ctx context.Context, path string) ([]FileVersion, error) {
@@ -356,6 +419,7 @@ func (a *App) Versions(ctx context.Context, path string) ([]FileVersion, error) 
 		if err := rows.Scan(&v.ID, &v.Parent, &v.Manifest, &v.CreatedAt); err != nil {
 			return nil, err
 		}
+		v.CreatedAt = localProtocolTime(v.CreatedAt)
 		out = append(out, v)
 	}
 	return out, rows.Err()

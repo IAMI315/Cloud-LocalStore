@@ -48,7 +48,7 @@ func (s *ClientStore) SaveChunks(ctx context.Context, chunks []objectstore.Chunk
 		if !objectstore.Verify(chunk.Data, chunk.Hash) {
 			return fmt.Errorf("chunk hash mismatch: %s", chunk.Hash)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO chunks(chunk_hash,size) VALUES(?,?) ON CONFLICT(chunk_hash) DO UPDATE SET size=excluded.size, verified_at=CURRENT_TIMESTAMP`, chunk.Hash, chunk.Size); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO chunks(chunk_hash,size) VALUES(?,?) ON CONFLICT(chunk_hash) DO UPDATE SET size=excluded.size, verified_at=datetime('now','localtime')`, chunk.Hash, chunk.Size); err != nil {
 			return err
 		}
 	}
@@ -81,7 +81,7 @@ func (s *ClientStore) CreateFileVersion(ctx context.Context, fileID domain.FileI
 	if _, err = tx.ExecContext(ctx, `INSERT INTO file_versions(version_id,file_id,parent_version_id,manifest_id,is_conflict) VALUES(?,?,?,?,?)`, version, fileID, nullableID(parent), manifest, boolInt(conflict)); err != nil {
 		return "", fmt.Errorf("create file version: %w", err)
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE files SET current_version_id=?, tombstone=0, updated_at=CURRENT_TIMESTAMP WHERE file_id=?`, version, fileID)
+	result, err := tx.ExecContext(ctx, `UPDATE files SET current_version_id=?, tombstone=0, updated_at=datetime('now','localtime') WHERE file_id=?`, version, fileID)
 	if err != nil {
 		return "", err
 	}

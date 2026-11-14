@@ -51,7 +51,7 @@ func (s *ClientStore) FindLegacyUpdateForVersion(ctx context.Context, spaceID, p
 	if deletes != 0 {
 		return SyncOperation{}, sql.ErrNoRows
 	}
-	if _, err := s.DB.ExecContext(ctx, `UPDATE sync_outbox SET file_version_id=?,updated_at=CURRENT_TIMESTAMP WHERE operation_id=?`, fileVersionID, op.OperationID); err != nil {
+	if _, err := s.DB.ExecContext(ctx, `UPDATE sync_outbox SET file_version_id=?,updated_at=datetime('now','localtime') WHERE operation_id=?`, fileVersionID, op.OperationID); err != nil {
 		return SyncOperation{}, err
 	}
 	op.FileVersionID = fileVersionID
@@ -128,6 +128,6 @@ func (s *ClientStore) SaveSyncOperation(ctx context.Context, op SyncOperation) e
 	if op.OperationType == "" {
 		op.OperationType = "update"
 	}
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO sync_outbox(operation_id,space_id,normalized_path,manifest_id,operation_type,file_version_id,parent_revision,state,revision,updated_at) VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(operation_id) DO UPDATE SET operation_type=excluded.operation_type,file_version_id=excluded.file_version_id,parent_revision=excluded.parent_revision,state=excluded.state,revision=excluded.revision,updated_at=CURRENT_TIMESTAMP`, op.OperationID, op.SpaceID, op.NormalizedPath, op.ManifestID, op.OperationType, op.FileVersionID, op.ParentRevision, op.State, op.Revision)
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO sync_outbox(operation_id,space_id,normalized_path,manifest_id,operation_type,file_version_id,parent_revision,state,revision,updated_at) VALUES(?,?,?,?,?,?,?,?,?,datetime('now','localtime')) ON CONFLICT(operation_id) DO UPDATE SET operation_type=excluded.operation_type,file_version_id=excluded.file_version_id,parent_revision=excluded.parent_revision,state=excluded.state,revision=excluded.revision,updated_at=datetime('now','localtime')`, op.OperationID, op.SpaceID, op.NormalizedPath, op.ManifestID, op.OperationType, op.FileVersionID, op.ParentRevision, op.State, op.Revision)
 	return err
 }
